@@ -6,5 +6,5 @@ TLSN_MPZ_VERSION=v0.1.0-alpha.6
 TLSN_MPZ_COMMIT=6ebfe619490c3155a589fc6a3be83b0976de19dc
 # Patch provenance: sha256 over `sha256sum <sorted *.patch>` of each directory, so the bytes, the names and the
 # set are all pinned. Regenerate with `prepare-core.sh --print-digests` when the series changes deliberately.
-TLSN_CORE_PATCHES_SHA256=bb637a2d7ec734096458ee5ede8884d5cf64c8159d75926eeffe770deb3c84a6
+TLSN_CORE_PATCHES_SHA256=85db62cdfd919b2ab818724769b61d47777b6670e59c31a62f4e3df89ff72b67
 TLSN_MPZ_PATCHES_SHA256=2bf806f9f2dd022284ad4d2eb05c582140dd42cd82ad980b1d94c20b226ce396
