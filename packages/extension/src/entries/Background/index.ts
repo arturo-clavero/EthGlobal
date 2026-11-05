@@ -4,6 +4,7 @@ import { confirmationManager } from '../../background/ConfirmationManager';
 import type { PluginConfig } from '@tlsn/plugin-sdk';
 import type { InterceptedRequest, InterceptedRequestHeader } from '../../types/window-manager';
 import { validateUrl } from '../../utils/url-validator';
+import { autoApprovalFor } from '../../background/autoApproval';
 import { logger } from '@tlsn/common';
 import { getStoredLogLevel } from '../../utils/logLevelStorage';
 import type { ApprovalMode, BackgroundMessage } from '../../types/messages';
@@ -230,13 +231,22 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
         let mode: ApprovalMode;
 
         try {
-          mode = await confirmationManager.requestConfirmation(
-            pluginConfig,
-            confirmRequestId,
-            executionCount,
-            sender.tab?.url,
-            request.code,
-          );
+          // An allowlisted plugin on an allowed
+          // origin runs without the prompt ("allow all" for this run); every
+          // other origin or plugin, and any error, gets the stock prompt.
+          const auto = await autoApprovalFor(request.code, sender, browser.runtime.id);
+          if (auto) {
+            logger.info(`Auto-approved a trusted plugin ${auto.plugin.id} on ${auto.origin}`);
+            mode = auto.mode;
+          } else {
+            mode = await confirmationManager.requestConfirmation(
+              pluginConfig,
+              confirmRequestId,
+              executionCount,
+              sender.tab?.url,
+              request.code,
+            );
+          }
         } catch (confirmError) {
           logger.error('Confirmation error:', confirmError);
           return {

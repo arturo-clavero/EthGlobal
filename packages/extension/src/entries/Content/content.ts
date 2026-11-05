@@ -10,10 +10,25 @@ declare const __EXTENSION_VERSION__: string;
  * Provides methods for web pages to interact with the TLSN extension,
  * including opening new windows for notarization.
  */
+// This extension's ID, set by the content script on the <script>
+// element that loads this file (read synchronously, while it is current).
+const FORK_EXTENSION_ID: string | null = (() => {
+  try {
+    const id = (document.currentScript as HTMLScriptElement | null)?.dataset?.extensionId;
+    return id && /^[a-p]{32}$/.test(id) ? id : null;
+  } catch {
+    return null;
+  }
+})();
+
 class ExtensionAPI {
   // Extension version (matches manifest). Pages can compare against a
   // minimum required version to detect outdated installs.
   readonly version: string = __EXTENSION_VERSION__;
+
+  // Lets the page tell this build from the stock one (UX only;
+  // the verifier checks the real Origin).
+  readonly extensionId: string | null = FORK_EXTENSION_ID;
 
   /**
    * Execute JavaScript code in a sandboxed environment

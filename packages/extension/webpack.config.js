@@ -170,6 +170,12 @@ var options = {
       'process.env': '{}',
       global: 'globalThis',
       __EXTENSION_VERSION__: JSON.stringify(require('./package.json').version),
+      // Origins that may see the extension ID and ask
+      // helperStatus (constants/productOrigins.ts); set by build.sh. Unset = none.
+      __FORK_PRODUCT_ORIGINS__: JSON.stringify(process.env.FORK_PRODUCT_ORIGINS || ''),
+      // The trusted plugins (sha256 + layout of each built bundle,
+      // constants/pluginAllowlist.ts); set by build.sh. Unset = none (always prompt).
+      __FORK_PLUGIN_ALLOWLIST__: JSON.stringify(process.env.FORK_PLUGIN_ALLOWLIST || ''),
     }),
     new CopyWebpackPlugin({
       patterns: [
