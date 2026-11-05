@@ -1,3 +1,15 @@
+> [!NOTE]
+> **This is a fork of [tlsnotary/tlsn-extension](https://github.com/tlsnotary/tlsn-extension)**, based on release
+> `0.1.0.1501` (commit `68bbd38`). Upstream history is kept unchanged; this fork's work is merged on top of it.
+>
+> On top of upstream, this fork adds:
+> - zero-knowledge private proofs generated in the browser, so raw data never leaves the user's machine
+>   (`private-proof/`)
+> - built-in plugins, an origin-gated page API and proving-flow changes (`packages/extension`, `packages/plugin-sdk`)
+> - a pinned, patched TLSNotary core for the WASM prover (`core/`) and an in-place build kit (`fork/`)
+>
+> Licensed like upstream: MIT or Apache-2.0, at your option. The upstream README follows.
+
 <img src="packages/extension/src/assets/img/icon-128.png" width="64"/>
 
 # TLSNotary Apps & Plugin Tooling
