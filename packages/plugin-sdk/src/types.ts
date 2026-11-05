@@ -60,6 +60,8 @@ export type ExecutionContext = {
   };
   revealApproval?: { resolve: () => void; reject: (err: Error) => void } | null;
   revealApprovalDescriptors?: RevealRangeDescriptor[] | null;
+  /** One line shown above the reveal list (request target, approval deadline). */
+  revealApprovalNote?: string | null;
   revealWasRejected?: boolean;
 };
 
@@ -169,6 +171,8 @@ export type RevealRangeDescriptor = {
   action: HandlerActionKind;
   algorithm?: HashAlgorithm;
   preview: string;
+  /** Byte length of the range (shown in the approval summary). */
+  length?: number;
 };
 
 /**

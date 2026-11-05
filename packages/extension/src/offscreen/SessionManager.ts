@@ -93,6 +93,7 @@ function makeDescriptor(
     action,
     algorithm,
     preview,
+    length: safeEnd - safeStart,
   };
 }
 

@@ -80,3 +80,50 @@ describe('createRevealApprovalOverlay', () => {
     expect(text.some((t) => t.toLowerCase().includes('receiv'))).toBe(false);
   });
 });
+
+// The summary scrolls and Approve stays reachable.
+describe('createRevealApprovalOverlay (scrollable summary)', () => {
+  type Node = Exclude<DomJson, string>;
+  const many: RevealRangeDescriptor[] = Array.from({ length: 60 }, (_, i) => ({
+    direction: i % 2 ? 'RECV' : 'SENT',
+    label: `row ${i}`,
+    action: 'REVEAL',
+    preview: 'x'.repeat(500),
+    length: 500,
+  }));
+  const card = (root: DomJson): Node => (root as Node).children[0] as Node;
+
+  it('caps the card at the viewport and scrolls only the list', () => {
+    const c = card(createRevealApprovalOverlay(many));
+    expect(c.options.style?.maxHeight).toBe('85vh');
+    expect(c.options.style?.display).toBe('flex');
+    expect(c.options.style?.flexDirection).toBe('column');
+    const [header, list, footer] = c.children as Node[];
+    expect(list.options.style?.overflowY).toBe('auto');
+    expect(list.options.style?.minHeight).toBe('0');
+    expect(header.options.style?.flex).toBe('0 0 auto');
+    expect(footer.options.style?.flex).toBe('0 0 auto');
+    // Approve and Reject live in the footer, outside the scrolling list.
+    expect(findButtons(footer)).toEqual(['_revealReject', '_revealApprove']);
+    expect(findButtons(list)).toEqual([]);
+  });
+
+  it('shows the byte length and the note', () => {
+    const text = flattenText(
+      createRevealApprovalOverlay(
+        [
+          {
+            direction: 'SENT',
+            label: 'START_LINE',
+            action: 'REVEAL',
+            preview: 'GET / HTTP/1.1',
+            length: 14,
+          },
+        ],
+        'GET github.com/ → 200. Approve within 20 s',
+      ),
+    );
+    expect(text).toContain('REVEAL · 14 B');
+    expect(text).toContain('GET github.com/ → 200. Approve within 20 s');
+  });
+});

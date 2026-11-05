@@ -143,6 +143,7 @@ export function updateExecutionContext(
     stateStore?: Record<string, unknown>;
     revealApproval?: { resolve: () => void; reject: (err: Error) => void } | null;
     revealApprovalDescriptors?: RevealRangeDescriptor[] | null;
+    revealApprovalNote?: string | null;
     revealWasRejected?: boolean;
   },
 ): void {
@@ -434,6 +435,7 @@ export function makeOpenWindow(
               updateExecutionContext(uuid, {
                 revealApproval: null,
                 revealApprovalDescriptors: null,
+                revealApprovalNote: null,
               });
               approval.resolve();
             }
@@ -446,6 +448,7 @@ export function makeOpenWindow(
               updateExecutionContext(uuid, {
                 revealApproval: null,
                 revealApprovalDescriptors: null,
+                revealApprovalNote: null,
                 revealWasRejected: true,
               });
               approval.reject(new Error('User rejected reveal'));
@@ -791,43 +794,69 @@ export function createTimeoutWarningOverlay(): DomJson {
   };
 }
 
-export function createRevealApprovalOverlay(descriptors: RevealRangeDescriptor[]): DomJson {
+/**
+ * The reveal approval summary. Upstream's card had
+ * no height limit, so a long reveal list pushed Approve off-screen with no way to
+ * scroll. Here the card is capped at the viewport, the list scrolls on its own,
+ * and the title and the Approve/Reject footer stay visible whatever the list
+ * length. Each row shows the handler label, REVEAL/HASH, the byte length and the
+ * text that would be revealed (HASH rows: the algorithm only). `note` is one
+ * line above the list (the request target and the approval deadline).
+ */
+export function createRevealApprovalOverlay(
+  descriptors: RevealRangeDescriptor[],
+  note?: string | null,
+): DomJson {
   const sentDescriptors = descriptors.filter((d) => d.direction === 'SENT');
   const recvDescriptors = descriptors.filter((d) => d.direction === 'RECV');
 
   const renderDescriptorRow = (descriptor: RevealRangeDescriptor): DomJson => {
     const isReveal = descriptor.action === 'REVEAL';
+    const meta =
+      typeof descriptor.length === 'number'
+        ? `${descriptor.action} · ${descriptor.length} B`
+        : descriptor.action;
     return {
       type: 'div',
       options: {
         style: {
           display: 'flex',
-          alignItems: 'flex-start',
-          gap: '8px',
-          marginBottom: '8px',
+          flexDirection: 'column',
+          gap: '4px',
+          padding: '8px 0',
+          borderBottom: '1px solid #f3f4f6',
         },
       },
       children: [
         {
           type: 'div',
           options: {
-            style: { fontSize: '12px', color: '#374151', minWidth: '120px' },
+            style: { display: 'flex', alignItems: 'center', gap: '8px' },
           },
-          children: [descriptor.label],
-        },
-        {
-          type: 'div',
-          options: {
-            style: {
-              fontSize: '11px',
-              fontWeight: '600',
-              padding: '2px 6px',
-              borderRadius: '4px',
-              backgroundColor: isReveal ? '#d1fae5' : '#fef3c7',
-              color: isReveal ? '#065f46' : '#92400e',
+          children: [
+            {
+              type: 'div',
+              options: {
+                style: { fontSize: '12px', fontWeight: '600', color: '#374151', flex: '1' },
+              },
+              children: [descriptor.label],
             },
-          },
-          children: [descriptor.action],
+            {
+              type: 'div',
+              options: {
+                style: {
+                  fontSize: '11px',
+                  fontWeight: '600',
+                  padding: '2px 6px',
+                  borderRadius: '4px',
+                  whiteSpace: 'nowrap',
+                  backgroundColor: isReveal ? '#d1fae5' : '#fef3c7',
+                  color: isReveal ? '#065f46' : '#92400e',
+                },
+              },
+              children: [meta],
+            },
+          ],
         },
         {
           type: 'div',
@@ -835,9 +864,15 @@ export function createRevealApprovalOverlay(descriptors: RevealRangeDescriptor[]
             style: {
               fontFamily: 'monospace',
               fontSize: '11px',
-              color: isReveal ? '#6b7280' : '#9ca3af',
+              color: isReveal ? '#4b5563' : '#9ca3af',
               fontStyle: isReveal ? 'normal' : 'italic',
+              whiteSpace: 'pre-wrap',
               wordBreak: 'break-all',
+              maxHeight: '96px',
+              overflowY: 'auto',
+              backgroundColor: '#f9fafb',
+              borderRadius: '4px',
+              padding: '4px 6px',
             },
           },
           children: [descriptor.preview],
@@ -861,7 +896,7 @@ export function createRevealApprovalOverlay(descriptors: RevealRangeDescriptor[]
             fontWeight: '600',
             color: '#6b7280',
             textTransform: 'uppercase',
-            marginBottom: '8px',
+            marginBottom: '4px',
           },
         },
         children: [title],
@@ -870,7 +905,7 @@ export function createRevealApprovalOverlay(descriptors: RevealRangeDescriptor[]
     ],
   });
 
-  const cardChildren: DomJson[] = [
+  const header: DomJson[] = [
     {
       type: 'div',
       options: {
@@ -878,61 +913,75 @@ export function createRevealApprovalOverlay(descriptors: RevealRangeDescriptor[]
           fontSize: '20px',
           fontWeight: '700',
           color: '#111827',
-          marginBottom: '16px',
+          marginBottom: note ? '6px' : '0',
         },
       },
       children: ['Approve Reveal to Verifier'],
     },
   ];
+  if (note) {
+    header.push({
+      type: 'div',
+      options: { style: { fontSize: '12px', color: '#4b5563', overflowWrap: 'anywhere' } },
+      children: [note],
+    });
+  }
 
-  if (sentDescriptors.length > 0) cardChildren.push(renderSection('Sent', sentDescriptors));
-  if (recvDescriptors.length > 0) cardChildren.push(renderSection('Received', recvDescriptors));
+  const listChildren: DomJson[] = [];
+  if (sentDescriptors.length > 0) listChildren.push(renderSection('Sent', sentDescriptors));
+  if (recvDescriptors.length > 0) listChildren.push(renderSection('Received', recvDescriptors));
 
-  cardChildren.push({
-    type: 'div',
-    options: {
-      style: {
-        display: 'flex',
-        justifyContent: 'flex-end',
-        gap: '12px',
-        marginTop: '24px',
-      },
-    },
-    children: [
-      {
-        type: 'button',
-        options: {
-          onclick: '_revealReject',
-          style: {
-            backgroundColor: '#fee2e2',
-            color: '#991b1b',
-            border: 'none',
-            padding: '8px 20px',
-            borderRadius: '8px',
-            fontWeight: '600',
-            cursor: 'pointer',
-          },
-        },
-        children: ['Reject'],
-      },
-      {
-        type: 'button',
-        options: {
-          onclick: '_revealApprove',
-          style: {
-            backgroundColor: '#d1fae5',
-            color: '#065f46',
-            border: 'none',
-            padding: '8px 20px',
-            borderRadius: '8px',
-            fontWeight: '600',
-            cursor: 'pointer',
-          },
-        },
-        children: ['Approve'],
-      },
-    ],
+  const buttonStyle = (bg: string, fg: string) => ({
+    backgroundColor: bg,
+    color: fg,
+    border: 'none',
+    padding: '8px 20px',
+    borderRadius: '8px',
+    fontWeight: '600',
+    cursor: 'pointer',
   });
+
+  const cardChildren: DomJson[] = [
+    {
+      type: 'div',
+      options: { style: { flex: '0 0 auto', marginBottom: '12px' } },
+      children: header,
+    },
+    {
+      // The only scrolling region: the card keeps the header and footer in view.
+      type: 'div',
+      options: {
+        id: 'tlsn-reveal-approval-list',
+        style: { flex: '1 1 auto', minHeight: '0', overflowY: 'auto', paddingRight: '4px' },
+      },
+      children: listChildren,
+    },
+    {
+      type: 'div',
+      options: {
+        style: {
+          flex: '0 0 auto',
+          display: 'flex',
+          justifyContent: 'flex-end',
+          gap: '12px',
+          paddingTop: '16px',
+          borderTop: '1px solid #e5e7eb',
+        },
+      },
+      children: [
+        {
+          type: 'button',
+          options: { onclick: '_revealReject', style: buttonStyle('#fee2e2', '#991b1b') },
+          children: ['Reject'],
+        },
+        {
+          type: 'button',
+          options: { onclick: '_revealApprove', style: buttonStyle('#d1fae5', '#065f46') },
+          children: ['Approve'],
+        },
+      ],
+    },
+  ];
 
   return {
     type: 'div',
@@ -959,9 +1008,13 @@ export function createRevealApprovalOverlay(descriptors: RevealRangeDescriptor[]
           style: {
             backgroundColor: '#ffffff',
             borderRadius: '16px',
-            padding: '32px',
-            maxWidth: '520px',
+            padding: '24px',
+            maxWidth: '560px',
             width: '90%',
+            maxHeight: '85vh',
+            boxSizing: 'border-box',
+            display: 'flex',
+            flexDirection: 'column',
             boxShadow: '0 24px 48px rgba(0, 0, 0, 0.25)',
           },
         },
@@ -1375,7 +1428,9 @@ export class HostCore {
           const overlays: DomJson[] = [];
           const ctx = executionContextRegistry.get(uuid);
           if (ctx?.revealApprovalDescriptors) {
-            overlays.push(createRevealApprovalOverlay(ctx.revealApprovalDescriptors));
+            overlays.push(
+              createRevealApprovalOverlay(ctx.revealApprovalDescriptors, ctx.revealApprovalNote),
+            );
           }
           // Skip the DomJson overlay if a native warning handler is registered;
           // the platform will render its own UI via onTimeoutWarning.
@@ -1520,15 +1575,35 @@ export class HostCore {
     resolve: () => void,
     reject: (err: Error) => void,
     descriptors: RevealRangeDescriptor[],
+    note?: string,
   ): void {
     if (!this._activeUuid) return;
     const uuid = this._activeUuid;
     updateExecutionContext(uuid, {
       revealApproval: { resolve, reject },
       revealApprovalDescriptors: descriptors,
+      revealApprovalNote: note ?? null,
     });
     const ctx = executionContextRegistry.get(uuid);
     ctx?.main(true);
+  }
+
+  /**
+   * Remove a pending reveal approval without resolving it (the
+   * caller already decided, e.g. its approval deadline passed) and re-render so
+   * the summary disappears. No-op when nothing is pending.
+   */
+  clearRevealApproval(): void {
+    if (!this._activeUuid) return;
+    const uuid = this._activeUuid;
+    const ctx = executionContextRegistry.get(uuid);
+    if (!ctx?.revealApproval) return;
+    updateExecutionContext(uuid, {
+      revealApproval: null,
+      revealApprovalDescriptors: null,
+      revealApprovalNote: null,
+    });
+    executionContextRegistry.get(uuid)?.main(true);
   }
 
   renderUi(windowId: number, json: DomJson): void {
