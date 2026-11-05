@@ -48,6 +48,15 @@ export interface PluginEvaluatorResult {
   exports: Record<string, unknown>;
   /** Called by HostCore when the plugin finishes (success or error). */
   dispose: () => void;
+  /**
+   * Run the sandbox's queued jobs (promise reactions).
+   * QuickJS runs them only while code is evaluated or when a host promise the
+   * plugin awaits settles, so a job queued by main() or by a button handler
+   * (`Promise.resolve().then(run)`, an async handler that already finished)
+   * would wait for the next unrelated host call. Optional: evaluators whose
+   * jobs run on the host's own microtask queue (new Function) need none.
+   */
+  wake?: () => void;
 }
 
 /**
@@ -307,6 +316,8 @@ export interface PluginLifecycle {
   isCompleted: boolean;
   pendingCallbacks: number;
   onDrain: (() => void) | null;
+  /** Schedule a run of the sandbox's queued jobs (see PluginEvaluatorResult.wake). */
+  wake?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -464,7 +475,11 @@ export function makeOpenWindow(
               updateExecutionContext(uuid, {
                 currentContext: message.onclick,
               });
-              const result = await cb();
+              const pending = cb();
+              // The handler's own promise (and anything it
+              // queued) settles only when the sandbox runs its jobs.
+              lifecycle.wake?.();
+              const result = await pending;
               if (executionContextRegistry.has(uuid)) {
                 updateExecutionContext(uuid, {
                   currentContext: '',
@@ -1172,9 +1187,12 @@ export class HostCore {
         }
       }
 
+      // The error reaches the caller at once (e.g. the
+      // window was closed while a button handler awaited a proof); only the
+      // cleanup waits for in-flight callbacks.
+      doneReject(error);
       const finalize = () => {
         executionContextRegistry.delete(uuid);
-        doneReject(error);
         try {
           dispose();
         } catch (disposeError) {
@@ -1186,6 +1204,7 @@ export class HostCore {
         logger.debug(
           `[executePlugin] Deferring disposal: ${lifecycle.pendingCallbacks} callback(s) in-flight`,
         );
+        lifecycle.wake?.();
         waitForPendingCallbacks().then(finalize);
       } else {
         finalize();
@@ -1259,13 +1278,16 @@ export class HostCore {
         }
 
         const wasRejected = ctx?.revealWasRejected === true;
+        // The result goes to the caller at once; only the
+        // cleanup (registry entry, sandbox disposal) waits for in-flight
+        // callbacks, e.g. the button handler that called done().
+        if (wasRejected) {
+          doneReject(new Error('User rejected reveal'));
+        } else {
+          doneResolve(args);
+        }
         const finalize = () => {
           executionContextRegistry.delete(uuid);
-          if (wasRejected) {
-            doneReject(new Error('User rejected reveal'));
-          } else {
-            doneResolve(args);
-          }
           try {
             dispose();
           } catch (disposeError) {
@@ -1277,6 +1299,7 @@ export class HostCore {
           logger.debug(
             `[executePlugin] done() called with ${lifecycle.pendingCallbacks} callback(s) in-flight, deferring cleanup`,
           );
+          lifecycle.wake?.();
           waitForPendingCallbacks().then(finalize);
         } else {
           finalize();
@@ -1301,48 +1324,39 @@ export class HostCore {
           }
         };
 
-        if (!windowId) {
-          const finalize = () => {
-            executionContextRegistry.delete(uuid);
-            settle();
-            try {
-              dispose();
-            } catch (disposeError) {
-              logger.error('[executePlugin] Error disposing evaluator:', disposeError);
-            }
-          };
-
-          if (lifecycle.pendingCallbacks > 0) {
-            waitForPendingCallbacks().then(finalize);
-          } else {
-            finalize();
-          }
-          return;
-        }
-
-        const delayMs = options?.delayMs ?? 2000;
-        onRenderPluginUi(windowId, createCompletionOverlay(options?.title, options?.message));
-
-        const closeAndFinalize = () => {
-          onCloseWindow(windowId);
+        // As done(), the result never waits for in-flight
+        // callbacks (only for the overlay's delay); the cleanup does.
+        const finalize = () => {
           executionContextRegistry.delete(uuid);
-          settle();
           try {
             dispose();
           } catch (disposeError) {
             logger.error('[executePlugin] Error disposing evaluator:', disposeError);
           }
         };
-
-        const startDelay = () => {
-          setTimeout(closeAndFinalize, delayMs);
+        const finalizeAfterCallbacks = () => {
+          if (lifecycle.pendingCallbacks > 0) {
+            lifecycle.wake?.();
+            waitForPendingCallbacks().then(finalize);
+          } else {
+            finalize();
+          }
         };
 
-        if (lifecycle.pendingCallbacks > 0) {
-          waitForPendingCallbacks().then(startDelay);
-        } else {
-          startDelay();
+        if (!windowId) {
+          settle();
+          finalizeAfterCallbacks();
+          return;
         }
+
+        const delayMs = options?.delayMs ?? 2000;
+        onRenderPluginUi(windowId, createCompletionOverlay(options?.title, options?.message));
+
+        setTimeout(() => {
+          onCloseWindow(windowId);
+          settle();
+          finalizeAfterCallbacks();
+        }, delayMs);
       },
     };
 
@@ -1357,6 +1371,24 @@ export class HostCore {
       const result = await this.evaluator.evaluate(code, capabilities);
       exportedCode = result.exports;
       dispose = result.dispose; // Update mutable ref now that evaluator has returned
+      const runJobs = result.wake;
+      if (runJobs) {
+        // Coalesced and deferred to a host microtask, so it never runs inside a
+        // call into the sandbox (main(), a handler) and never after disposal.
+        let queued = false;
+        lifecycle.wake = () => {
+          if (queued) return;
+          queued = true;
+          queueMicrotask(() => {
+            queued = false;
+            try {
+              runJobs();
+            } catch (wakeError) {
+              logger.error('[executePlugin] Error running queued sandbox jobs:', wakeError);
+            }
+          });
+        };
+      }
     } catch (evalError) {
       const error = evalError instanceof Error ? evalError : new Error(String(evalError));
       terminateWithError(new Error(`Plugin evaluation failed: ${error.message}`));
@@ -1458,6 +1490,10 @@ export class HostCore {
         const err = error instanceof Error ? error : new Error(String(error));
         terminateWithError(new Error(`Plugin main() error: ${err.message}`));
         return null;
+      } finally {
+        // Jobs main() queued (an effect's deferred start)
+        // run now, not at the next unrelated call into the sandbox.
+        lifecycle.wake?.();
       }
     };
 

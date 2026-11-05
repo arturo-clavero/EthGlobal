@@ -27,6 +27,7 @@ interface ChromeRuntimeLike {
   };
 }
 import { validateProvePermission, validateOpenWindowPermission } from './permissionValidator';
+import { sanitizePageProgress } from '../constants/pageProgress';
 
 /** Maximum number of preview characters shown per reveal range. */
 const PREVIEW_MAX_CHARS = 256;
@@ -428,6 +429,28 @@ export class SessionManager {
     return host;
   }
 
+  /**
+   * `reportProgress` only for a run the background
+   * auto-approved (an allowlisted plugin on an allowed-origin page; it writes
+   * _autoApproved after the page's sessionData) that the page can match (a
+   * requestId). Checked fields only (constants/pageProgress.ts). Other runs
+   * have no such capability.
+   */
+  private addPageProgress(
+    host: Host,
+    requestId: string | null,
+    execSessionData: Record<string, string> | null,
+  ): void {
+    if (execSessionData?._autoApproved !== '1' || !requestId) return;
+    host.addCapability('reportProgress', (raw: unknown) => {
+      const progress = sanitizePageProgress(raw);
+      if (!progress) return;
+      SessionManager.getChromeRuntime()
+        .sendMessage({ type: 'PLUGIN_PROGRESS', requestId, progress })
+        .catch((err: unknown) => logger.warn('[SessionManager] reportProgress failed:', err));
+    });
+  }
+
   async awaitInit(): Promise<SessionManager> {
     await this.initPromise;
     return this;
@@ -451,6 +474,7 @@ export class SessionManager {
 
     // Create a per-execution Host with callbacks that close over this execution's state
     const host = this.createExecutionHost(pluginConfig, execRequestId, sessionData || null);
+    this.addPageProgress(host, execRequestId, sessionData || null);
 
     // Wrap the plugin's event listener so it does NOT return a Promise to
     // Chrome's messaging API. The plugin listener (makeOpenWindow's onMessage)

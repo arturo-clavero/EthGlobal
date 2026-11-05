@@ -23,7 +23,10 @@ const windowManager = new WindowManager();
 // Track requestId → tabId for routing progress events back to the originating tab.
 // Entries have a TTL to prevent leaks if the offscreen document crashes before cleanup.
 const PROGRESS_ROUTE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const progressRoutes: Map<string, { tabId: number; createdAt: number }> = new Map();
+// `pageProgress` marks a route whose run was
+// auto-approved (a trusted plugin on an allowed origin); only those get PLUGIN_PROGRESS.
+const progressRoutes: Map<string, { tabId: number; createdAt: number; pageProgress?: boolean }> =
+  new Map();
 
 // Handle extension install/update
 browser.runtime.onInstalled.addListener((details) => {
@@ -164,6 +167,24 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
     return; // No response needed
   }
 
+  // A trusted plugin's progress → the tab that started
+  // the run, only when that run was auto-approved. The fields were checked
+  // where the report was made (offscreen) and are checked again where it is
+  // posted to the page (content script, allowed origins only).
+  if (request.type === 'PLUGIN_PROGRESS') {
+    const route = progressRoutes.get(request.requestId);
+    if (route?.pageProgress) {
+      browser.tabs
+        .sendMessage(route.tabId, {
+          type: 'PLUGIN_PROGRESS',
+          requestId: request.requestId,
+          progress: request.progress,
+        })
+        .catch(() => {});
+    }
+    return; // No response needed
+  }
+
   // Relay: outbound MPC bytes from offscreen → originating tab (→ page → data channel)
   if (request.type === 'RELAY_OUT') {
     const route = progressRoutes.get(request.requestId);
@@ -229,6 +250,7 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
         // Step 2: Request user confirmation
         const confirmRequestId = `confirm_${Date.now()}_${Math.random()}`;
         let mode: ApprovalMode;
+        let autoApproved = false;
 
         try {
           // An allowlisted plugin on an allowed
@@ -238,6 +260,9 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
           if (auto) {
             logger.info(`Auto-approved a trusted plugin ${auto.plugin.id} on ${auto.origin}`);
             mode = auto.mode;
+            autoApproved = true;
+            const route = request.requestId ? progressRoutes.get(request.requestId) : undefined;
+            if (route) route.pageProgress = true;
           } else {
             mode = await confirmationManager.requestConfirmation(
               pluginConfig,
@@ -278,6 +303,9 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
             ...request.sessionData,
             _approvalMode: mode,
             _pluginHash: pluginHash,
+            // After the page's data, so a page
+            // cannot set it; SessionManager adds reportProgress only for '1'.
+            _autoApproved: autoApproved ? '1' : '0',
           },
         });
         logger.debug('EXEC_CODE_OFFSCREEN response:', response);

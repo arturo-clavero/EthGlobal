@@ -3,6 +3,7 @@ import type { DomJson } from '@tlsn/plugin-sdk';
 import type { ContentMessage, ExecCodeResponse } from '../../types/messages';
 import { logger, LogLevel } from '@tlsn/common';
 import { isProductOrigin } from '../../constants/productOrigins';
+import { sanitizePageProgress } from '../../constants/pageProgress';
 
 // Initialize logger at DEBUG level for content scripts (no IndexedDB access)
 logger.init(LogLevel.DEBUG);
@@ -211,6 +212,18 @@ browser.runtime.onMessage.addListener((msg: unknown) => {
       },
       window.location.origin,
     );
+    return; // No response needed
+  }
+
+  // A trusted plugin's progress, on allowed origins only.
+  if (request.type === 'PLUGIN_PROGRESS') {
+    const progress = sanitizePageProgress(request.progress);
+    if (PRODUCT_PAGE && progress && typeof request.requestId === 'string') {
+      window.postMessage(
+        { type: 'TLSN_PLUGIN_PROGRESS', requestId: request.requestId, ...progress },
+        window.location.origin,
+      );
+    }
     return; // No response needed
   }
 
