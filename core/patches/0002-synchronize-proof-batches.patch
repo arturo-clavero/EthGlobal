@@ -1,0 +1,67 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -28,7 +28,7 @@
+ # git. Cargo would clone ~1 GB during dependency resolution for any build in
+ # this workspace, even when the ZK example is not built. Users run that example
+ # from its own directory.
+-exclude = ["crates/examples-zk"]
++exclude = ["crates/examples-zk", "mpz/crates/zk"]
+ resolver = "2"
+ 
+ [workspace.lints.rust]
+@@ -83,7 +83,7 @@
+ mpz-ot = { git = "https://github.com/privacy-ethereum/mpz", rev = "v0.1.0-alpha.6" }
+ mpz-share-conversion = { git = "https://github.com/privacy-ethereum/mpz", rev = "v0.1.0-alpha.6" }
+ mpz-fields = { git = "https://github.com/privacy-ethereum/mpz", rev = "v0.1.0-alpha.6" }
+-mpz-zk = { git = "https://github.com/privacy-ethereum/mpz", rev = "v0.1.0-alpha.6" }
++mpz-zk = { path = "mpz/crates/zk", version = "=0.1.0-alpha.6" }
+ mpz-hash = { git = "https://github.com/privacy-ethereum/mpz", rev = "v0.1.0-alpha.6", default-features = false }
+ mpz-ideal-vm = { git = "https://github.com/privacy-ethereum/mpz", rev = "v0.1.0-alpha.6" }
+ 
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -4043,7 +4043,6 @@
+ [[package]]
+ name = "mpz-zk"
+ version = "0.1.0-alpha.6"
+-source = "git+https://github.com/privacy-ethereum/mpz?rev=v0.1.0-alpha.6#6ebfe619490c3155a589fc6a3be83b0976de19dc"
+ dependencies = [
+  "async-trait",
+  "blake3",
+--- a/crates/tlsn/src/prover.rs
++++ b/crates/tlsn/src/prover.rs
+@@ -347,6 +347,10 @@
+             .state
+             .output
+             .ok_or(Error::internal().with_msg("prover has not yet closed the connection"))?;
++
++        // Proxy handshake execution is one-way; synchronize only after TLS closes.
++        #[cfg(not(tlsn_insecure))]
++        vm.enable_batch_sync();
+ 
+         // Prove tag verification of received records.
+         // The prover drops the proof output.
+--- a/crates/tlsn/src/verifier.rs
++++ b/crates/tlsn/src/verifier.rs
+@@ -250,6 +250,10 @@
+             .into_inner();
+         let keys = keys.expect("keys should be available");
+ 
++        // Proxy handshake execution is one-way; synchronize only after TLS closes.
++        #[cfg(not(tlsn_insecure))]
++        vm.enable_batch_sync();
++
+         // Prepare for the prover to prove tag verification of the received
+         // records.
+         let tag_proof = verify_tags(
+@@ -356,6 +360,10 @@
+ 
+         let keys = output.keys;
+         let tls_transcript = output.tls_transcript;
++
++        // Proxy handshake execution is one-way; synchronize only after TLS closes.
++        #[cfg(not(tlsn_insecure))]
++        vm.enable_batch_sync();
+ 
+         // Prepare for the prover to prove tag verification of the received
+         // records.

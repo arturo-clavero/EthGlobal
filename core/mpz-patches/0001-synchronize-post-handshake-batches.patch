@@ -1,0 +1,366 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 91dde57..9dd3f5c 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -52,15 +52,15 @@ unexpected_cfgs = { level = "warn", check-cfg = [
+ # enum_glob_use = "deny"
+ 
+ [workspace.dependencies]
+-mpz-core = { path = "crates/core" }
+-mpz-common = { path = "crates/common" }
++mpz-core = { git = "https://github.com/privacy-ethereum/mpz", rev = "v0.1.0-alpha.6" }
++mpz-common = { git = "https://github.com/privacy-ethereum/mpz", rev = "v0.1.0-alpha.6" }
+ mpz-fields = { path = "crates/fields" }
+-mpz-circuits = { path = "crates/circuits" }
++mpz-circuits = { git = "https://github.com/privacy-ethereum/mpz", rev = "v0.1.0-alpha.6" }
+ mpz-circuits-core = { path = "crates/circuits-core" }
+ mpz-circuits-data = { path = "crates/circuits-data" }
+ mpz-cointoss = { path = "crates/cointoss" }
+ mpz-cointoss-core = { path = "crates/cointoss-core" }
+-mpz-ot = { path = "crates/ot" }
++mpz-ot = { git = "https://github.com/privacy-ethereum/mpz", rev = "v0.1.0-alpha.6" }
+ mpz-ot-core = { path = "crates/ot-core" }
+ mpz-garble = { path = "crates/garble" }
+ mpz-garble-core = { path = "crates/garble-core" }
+@@ -70,8 +70,8 @@ mpz-share-conversion-core = { path = "crates/share-conversion-core" }
+ mpz-ole = { path = "crates/ole" }
+ mpz-ole-core = { path = "crates/ole-core" }
+ mpz-memory-core = { path = "crates/memory-core" }
+-mpz-vm-core = { path = "crates/vm-core" }
+-mpz-zk-core = { path = "crates/zk-core" }
++mpz-vm-core = { git = "https://github.com/privacy-ethereum/mpz", rev = "v0.1.0-alpha.6" }
++mpz-zk-core = { git = "https://github.com/privacy-ethereum/mpz", rev = "v0.1.0-alpha.6" }
+ mpz-zk = { path = "crates/zk" }
+ clmul = { path = "crates/clmul" }
+ matrix-transpose = { path = "crates/matrix-transpose" }
+diff --git a/crates/zk/Cargo.toml b/crates/zk/Cargo.toml
+index 8f4cc6d..3e6f695 100644
+--- a/crates/zk/Cargo.toml
++++ b/crates/zk/Cargo.toml
+@@ -2,6 +2,9 @@
+ name = "mpz-zk"
+ version = "0.1.0-alpha.6"
+ edition = "2024"
++workspace = "../.."
++license = "MIT OR Apache-2.0"
++repository = "https://github.com/privacy-ethereum/mpz"
+ 
+ [lints]
+ workspace = true
+diff --git a/crates/zk/src/lib.rs b/crates/zk/src/lib.rs
+index cacf918..b75d187 100644
+--- a/crates/zk/src/lib.rs
++++ b/crates/zk/src/lib.rs
+@@ -4,7 +4,7 @@ mod prover;
+ mod verifier;
+ 
+ pub use config::{ProverConfig, VerifierConfig};
+-pub use prover::Prover;
++pub use prover::{DEFAULT_BATCH_SYNC_WINDOW, Prover};
+ pub use verifier::Verifier;
+ 
+ #[cfg(test)]
+@@ -34,14 +34,145 @@ mod tests {
+ 
+     #[tokio::test]
+     async fn test_zk() {
++        check_zk(ProverConfig::default().batch_size(), false).await;
++    }
++
++    #[tokio::test]
++    async fn test_zk_synced_windows() {
++        // One AES call per batch: 6 checked batches. Window 1 is stop-and-wait,
++        // 2 and 3 pipeline, 64 exceeds the batch count (all acks drained at the
++        // end). The verifier is the same in every case.
++        for window in [1, 2, 3, 64] {
++            check_zk_calls(1, true, window, 6).await;
++        }
++        // A later execute() on the same channel must not see a stale ack.
++        check_zk_twice(2).await;
++    }
++
++    #[tokio::test]
++    async fn test_zk_full_batch() {
++        check_zk(1, true).await;
++    }
++
++    #[tokio::test]
++    async fn test_zk_synced_partial_batch() {
++        check_zk(ProverConfig::default().batch_size(), true).await;
++    }
++
++    async fn check_zk_calls(batch_size: usize, batch_sync: bool, window: usize, calls: u8) {
+         let mut rng = StdRng::seed_from_u64(0);
+         let delta = Delta::random(&mut rng);
+         let (mut ctx_p, mut ctx_v) = test_st_context(8);
+ 
+         let (ot_send, ot_recv) = ideal_rcot(rng.random(), delta.into_inner());
+ 
+-        let mut prover = Prover::new(ProverConfig::default(), ot_recv);
+-        let mut verifier = Verifier::new(VerifierConfig::default(), delta, ot_send);
++        let mut prover = Prover::new(ProverConfig::builder().batch_size(batch_size).build().unwrap(), ot_recv);
++        let mut verifier = Verifier::new(VerifierConfig::builder().batch_size(batch_size).build().unwrap(), delta, ot_send);
++
++        if batch_sync {
++            prover.enable_batch_sync();
++            prover.set_batch_sync_window(window);
++            verifier.enable_batch_sync();
++        }
++
++        let key_p: Array<U8, 16> = prover.alloc().unwrap();
++        prover.mark_private(key_p).unwrap();
++        prover.assign(key_p, [7u8; 16]).unwrap();
++        prover.commit(key_p).unwrap();
++        let key_v: Array<U8, 16> = verifier.alloc().unwrap();
++        verifier.mark_blind(key_v).unwrap();
++        verifier.commit(key_v).unwrap();
++
++        let mut outs = Vec::new();
++        for i in 0..calls {
++            let msg_p: Array<U8, 16> = prover.alloc().unwrap();
++            prover.mark_public(msg_p).unwrap();
++            prover.assign(msg_p, [i; 16]).unwrap();
++            prover.commit(msg_p).unwrap();
++            let ct_p: Array<U8, 16> = prover
++                .call(Call::builder(AES128.clone()).arg(key_p).arg(msg_p).build().unwrap())
++                .unwrap();
++            let msg_v: Array<U8, 16> = verifier.alloc().unwrap();
++            verifier.mark_public(msg_v).unwrap();
++            verifier.assign(msg_v, [i; 16]).unwrap();
++            verifier.commit(msg_v).unwrap();
++            let ct_v: Array<U8, 16> = verifier
++                .call(Call::builder(AES128.clone()).arg(key_v).arg(msg_v).build().unwrap())
++                .unwrap();
++            outs.push((prover.decode(ct_p).unwrap(), verifier.decode(ct_v).unwrap()));
++        }
++
++        let (rp, rv) = futures::join!(prover.execute_all(&mut ctx_p), verifier.execute_all(&mut ctx_v));
++        rp.unwrap();
++        rv.unwrap();
++        for (mut p, mut v) in outs {
++            assert_eq!(p.try_recv().unwrap().unwrap(), v.try_recv().unwrap().unwrap());
++        }
++    }
++
++    async fn check_zk_twice(window: usize) {
++        let mut rng = StdRng::seed_from_u64(1);
++        let delta = Delta::random(&mut rng);
++        let (mut ctx_p, mut ctx_v) = test_st_context(8);
++        let (ot_send, ot_recv) = ideal_rcot(rng.random(), delta.into_inner());
++        let mut prover = Prover::new(ProverConfig::builder().batch_size(1).build().unwrap(), ot_recv);
++        let mut verifier = Verifier::new(VerifierConfig::builder().batch_size(1).build().unwrap(), delta, ot_send);
++        prover.enable_batch_sync();
++        prover.set_batch_sync_window(window);
++        verifier.enable_batch_sync();
++
++        let key_p: Array<U8, 16> = prover.alloc().unwrap();
++        prover.mark_private(key_p).unwrap();
++        prover.assign(key_p, [9u8; 16]).unwrap();
++        prover.commit(key_p).unwrap();
++        let key_v: Array<U8, 16> = verifier.alloc().unwrap();
++        verifier.mark_blind(key_v).unwrap();
++        verifier.commit(key_v).unwrap();
++
++        for round in 0..2u8 {
++            let mut outs = Vec::new();
++            for i in 0..3u8 {
++                let m = round * 3 + i;
++                let msg_p: Array<U8, 16> = prover.alloc().unwrap();
++                prover.mark_public(msg_p).unwrap();
++                prover.assign(msg_p, [m; 16]).unwrap();
++                prover.commit(msg_p).unwrap();
++                let ct_p: Array<U8, 16> = prover
++                    .call(Call::builder(AES128.clone()).arg(key_p).arg(msg_p).build().unwrap())
++                    .unwrap();
++                let msg_v: Array<U8, 16> = verifier.alloc().unwrap();
++                verifier.mark_public(msg_v).unwrap();
++                verifier.assign(msg_v, [m; 16]).unwrap();
++                verifier.commit(msg_v).unwrap();
++                let ct_v: Array<U8, 16> = verifier
++                    .call(Call::builder(AES128.clone()).arg(key_v).arg(msg_v).build().unwrap())
++                    .unwrap();
++                outs.push((prover.decode(ct_p).unwrap(), verifier.decode(ct_v).unwrap()));
++            }
++            let (rp, rv) =
++                futures::join!(prover.execute_all(&mut ctx_p), verifier.execute_all(&mut ctx_v));
++            rp.unwrap();
++            rv.unwrap();
++            for (mut p, mut v) in outs {
++                assert_eq!(p.try_recv().unwrap().unwrap(), v.try_recv().unwrap().unwrap());
++            }
++        }
++    }
++
++    async fn check_zk(batch_size: usize, batch_sync: bool) {
++        let mut rng = StdRng::seed_from_u64(0);
++        let delta = Delta::random(&mut rng);
++        let (mut ctx_p, mut ctx_v) = test_st_context(8);
++
++        let (ot_send, ot_recv) = ideal_rcot(rng.random(), delta.into_inner());
++
++        let mut prover = Prover::new(ProverConfig::builder().batch_size(batch_size).build().unwrap(), ot_recv);
++        let mut verifier = Verifier::new(VerifierConfig::builder().batch_size(batch_size).build().unwrap(), delta, ot_send);
++
++        if batch_sync {
++            prover.enable_batch_sync();
++            verifier.enable_batch_sync();
++        }
+ 
+         let (ciphertext_p, ciphertext_v) = futures::join!(
+             {
+diff --git a/crates/zk/src/prover.rs b/crates/zk/src/prover.rs
+index f7f8f7d..d52ceea 100644
+--- a/crates/zk/src/prover.rs
++++ b/crates/zk/src/prover.rs
+@@ -8,10 +8,19 @@ use mpz_vm_core::{
+     memory::{DecodeFuture, Memory, Repr, Slice, View, binary::Binary, correlated::Mac},
+ };
+ use mpz_zk_core::{Prover as Core, ProverError, store::ProverStore};
+-use serio::SinkExt;
++use serio::{SinkExt, stream::IoStreamExt};
+ 
+ use crate::{callstack::CallStack, config::ProverConfig};
+ 
++/// Checked batches the prover may send before it waits for the verifier's
++/// acknowledgement of the oldest one, when batch sync is enabled.
++///
++/// 1 is stop-and-wait. A larger window only changes when the prover reads the
++/// acknowledgements, not what either peer sends, so it needs no change on the
++/// verifier side. The verifier still holds at most this many batches of
++/// unchecked work (their mux streams and adjust bits) at a time.
++pub const DEFAULT_BATCH_SYNC_WINDOW: usize = 3;
++
+ #[derive(Debug)]
+ pub struct Prover<OT> {
+     config: ProverConfig,
+@@ -19,6 +28,8 @@ pub struct Prover<OT> {
+     ot: OT,
+     callstack: CallStack,
+     transcript: Hasher,
++    batch_sync: bool,
++    batch_sync_window: usize,
+ }
+ 
+ impl<OT> Prover<OT> {
+@@ -30,9 +41,23 @@ impl<OT> Prover<OT> {
+             ot,
+             callstack: CallStack::default(),
+             transcript: Hasher::default(),
++            batch_sync: false,
++            batch_sync_window: DEFAULT_BATCH_SYNC_WINDOW,
+         }
+     }
+ 
++    /// Synchronizes checked batches with the peer to bound queued proof work.
++    /// Both peers must enable this at the same protocol boundary.
++    pub fn enable_batch_sync(&mut self) {
++        self.batch_sync = true;
++    }
++
++    /// Sets how many checked batches may await the verifier's acknowledgement
++    /// at once (see [`DEFAULT_BATCH_SYNC_WINDOW`]). Values below 1 are 1.
++    pub fn set_batch_sync_window(&mut self, window: usize) {
++        self.batch_sync_window = window.max(1);
++    }
++
+     /// Returns the MACs.
+     ///
+     /// # Arguments
+@@ -110,6 +135,8 @@ where
+ 
+     async fn execute(&mut self, ctx: &mut Context) -> VmResult<()> {
+         let mut prover = Core::default();
++        // Checked batches sent whose acknowledgement has not been read yet.
++        let mut unacked: usize = 0;
+ 
+         while !self.callstack.is_empty() {
+             let ready_calls: Vec<_> = self
+@@ -201,6 +228,13 @@ where
+                     .check(&mut self.transcript, &svole_choices, &svole_ev)
+                     .map_err(VmError::execute)?;
+                 ctx.io_mut().send(uv).await?;
++                if self.batch_sync {
++                    unacked += 1;
++                    if unacked >= self.batch_sync_window {
++                        ctx.io_mut().expect_next::<()>().await?;
++                        unacked -= 1;
++                    }
++                }
+             }
+         }
+ 
+@@ -216,6 +250,16 @@ where
+                 .check(&mut self.transcript, &svole_choices, &svole_ev)
+                 .map_err(VmError::execute)?;
+             ctx.io_mut().send(uv).await?;
++            if self.batch_sync {
++                unacked += 1;
++            }
++        }
++
++        // Every acknowledgement is read before execute() returns, so the
++        // channel holds nothing of this call for the next protocol step.
++        while unacked > 0 {
++            ctx.io_mut().expect_next::<()>().await?;
++            unacked -= 1;
+         }
+ 
+         // Pre-allocate OTs for the next execute() call's final check
+diff --git a/crates/zk/src/verifier.rs b/crates/zk/src/verifier.rs
+index 390e3e9..0230fd1 100644
+--- a/crates/zk/src/verifier.rs
++++ b/crates/zk/src/verifier.rs
+@@ -12,7 +12,7 @@ use mpz_vm_core::{
+     },
+ };
+ use mpz_zk_core::{Verifier as Core, VerifierError, store::VerifierStore};
+-use serio::stream::IoStreamExt;
++use serio::{SinkExt, stream::IoStreamExt};
+ 
+ use crate::{callstack::CallStack, config::VerifierConfig};
+ 
+@@ -23,6 +23,7 @@ pub struct Verifier<OT> {
+     ot: OT,
+     callstack: CallStack,
+     transcript: Hasher,
++    batch_sync: bool,
+ }
+ 
+ impl<OT> Verifier<OT> {
+@@ -34,9 +35,16 @@ impl<OT> Verifier<OT> {
+             ot,
+             callstack: CallStack::default(),
+             transcript: Hasher::default(),
++            batch_sync: false,
+         }
+     }
+ 
++    /// Synchronizes checked batches with the peer to bound queued proof work.
++    /// Both peers must enable this at the same protocol boundary.
++    pub fn enable_batch_sync(&mut self) {
++        self.batch_sync = true;
++    }
++
+     /// Returns the global MAC correlation, `delta`.
+     pub fn delta(&self) -> &Delta {
+         self.store.delta()
+@@ -193,6 +201,9 @@ where
+                 verifier
+                     .check(&mut self.transcript, &svole_keys, uv)
+                     .map_err(VmError::execute)?;
++                if self.batch_sync {
++                    ctx.io_mut().send(()).await?;
++                }
+             }
+         }
+ 
+@@ -206,6 +217,9 @@ where
+             verifier
+                 .check(&mut self.transcript, &svole_keys, uv)
+                 .map_err(VmError::execute)?;
++            if self.batch_sync {
++                ctx.io_mut().send(()).await?;
++            }
+         }
+ 
+         // Pre-allocate OTs for the next execute() call's final check

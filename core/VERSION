@@ -1,0 +1,10 @@
+# Pinned TLSNotary core and MPZ that the extension's WASM prover is built from.
+# Shell-sourced by prepare-core.sh: KEY=value lines only.
+TLSN_CORE_VERSION=v0.1.0-alpha.15
+TLSN_CORE_COMMIT=47aee45b53e06648c1b2ad3689b367b8c923fdec
+TLSN_MPZ_VERSION=v0.1.0-alpha.6
+TLSN_MPZ_COMMIT=6ebfe619490c3155a589fc6a3be83b0976de19dc
+# Patch provenance: sha256 over `sha256sum <sorted *.patch>` of each directory, so the bytes, the names and the
+# set are all pinned. Regenerate with `prepare-core.sh --print-digests` when the series changes deliberately.
+TLSN_CORE_PATCHES_SHA256=5717411fe0a1de024302aa23d12726723a130f83b3219289d0b20f4bab2886c0
+TLSN_MPZ_PATCHES_SHA256=2bf806f9f2dd022284ad4d2eb05c582140dd42cd82ad980b1d94c20b226ce396
