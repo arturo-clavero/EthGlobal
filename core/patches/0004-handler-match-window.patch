@@ -1,0 +1,166 @@
+Subject: [PATCH] sdk-core: match window for regex handlers
+
+A regex handler reveals every match (`find_iter`). A response that repeats
+one object per item (e.g. one summary per changed file) makes the proof's
+cost grow with the item count. `params.window = { skip, take }` keeps only
+the matches with index `skip..skip + take` (0-based, in document order);
+without it the handler is unchanged. A plugin can then reveal a large
+response one window at a time.
+
+Prover side only: `compute_reveal` runs in the extension's WASM prover;
+the verifier receives ranges, never handlers' params. Unknown fields
+inside the window are refused, a handler without one deserializes as
+before.
+
+diff --git a/crates/sdk-core/src/handler/extract.rs b/crates/sdk-core/src/handler/extract.rs
+index c3f44aa..1058787 100644
+--- a/crates/sdk-core/src/handler/extract.rs
++++ b/crates/sdk-core/src/handler/extract.rs
+@@ -11,7 +11,7 @@ use spansy::{
+ 
+ use crate::{
+     error::{Result, SdkError},
+-    types::{Handler, HandlerParams, HandlerPart},
++    types::{Handler, HandlerParams, HandlerPart, MatchWindow},
+ };
+ 
+ /// Converts a `RangeSet<usize>` to `Vec<Range<usize>>`.
+@@ -331,7 +331,7 @@ fn extract_all(handler: &Handler, raw: &[u8]) -> Result<Vec<Range<usize>>> {
+         && params.content_type.as_deref() == Some("regex")
+         && let Some(pattern) = params.regex.as_deref()
+     {
+-        return extract_regex(raw, pattern);
++        return extract_regex(raw, pattern, params.window);
+     }
+ 
+     // Return entire transcript as a single range.
+@@ -339,11 +339,20 @@ fn extract_all(handler: &Handler, raw: &[u8]) -> Result<Vec<Range<usize>>> {
+     Ok(vec![0..raw.len()])
+ }
+ 
+-fn extract_regex(raw: &[u8], pattern: &str) -> Result<Vec<Range<usize>>> {
++fn extract_regex(
++    raw: &[u8],
++    pattern: &str,
++    window: Option<MatchWindow>,
++) -> Result<Vec<Range<usize>>> {
+     let re = regex::bytes::Regex::new(pattern)
+         .map_err(|e| SdkError::handler(format!("invalid regex '{pattern}': {e}")))?;
+ 
+-    let ranges: Vec<Range<usize>> = re.find_iter(raw).map(|m| m.start()..m.end()).collect();
++    let matches = re.find_iter(raw).map(|m| m.start()..m.end());
++    // Only the windowed matches (document order) are revealed.
++    let ranges: Vec<Range<usize>> = match window {
++        Some(w) => matches.skip(w.skip).take(w.take).collect(),
++        None => matches.collect(),
++    };
+ 
+     Ok(ranges)
+ }
+diff --git a/crates/sdk-core/src/handler/tests.rs b/crates/sdk-core/src/handler/tests.rs
+index 0b2f3ce..d3c1d1c 100644
+--- a/crates/sdk-core/src/handler/tests.rs
++++ b/crates/sdk-core/src/handler/tests.rs
+@@ -656,3 +656,63 @@ fn test_mixed_hash_algorithms_per_range() {
+     assert_eq!(commit.recv[0].algorithm, HashAlgorithm::Sha256);
+     assert_eq!(commit.recv[1].algorithm, HashAlgorithm::Keccak256);
+ }
++
++// ---- Regex match window ----
++
++const WINDOW_BODY: &[u8] = b"HTTP/1.1 200 OK\r\n\
++Content-Length: 28\r\n\
++\r\n\
++[a1,a2,a3,a4,a5,a6,a7,a8,a9]";
++
++fn regex_window(window: Option<crate::types::MatchWindow>) -> Vec<Vec<u8>> {
++    let handler = Handler {
++        handler_type: HandlerType::Recv,
++        part: HandlerPart::All,
++        action: HandlerAction::Reveal,
++        params: Some(HandlerParams {
++            content_type: Some("regex".to_string()),
++            regex: Some(r"a[0-9]".to_string()),
++            window,
++            ..Default::default()
++        }),
++    };
++    let output = compute_reveal(REQUEST, WINDOW_BODY, &[handler]).expect("compute_reveal failed");
++    assert_eq!(output.recv_ranges_with_handlers.len(), output.reveal.recv.len());
++    extract_bytes(WINDOW_BODY, &output.reveal.recv).into_iter().map(|b| b.to_vec()).collect()
++}
++
++#[test]
++fn test_regex_window() {
++    use crate::types::MatchWindow;
++    let all: Vec<Vec<u8>> = (1..=9).map(|i| format!("a{i}").into_bytes()).collect();
++    assert_eq!(regex_window(None), all);
++    assert_eq!(regex_window(Some(MatchWindow { skip: 0, take: 3 })), all[0..3].to_vec());
++    assert_eq!(regex_window(Some(MatchWindow { skip: 3, take: 3 })), all[3..6].to_vec());
++    // The last window may be short; a window past the end reveals nothing.
++    assert_eq!(regex_window(Some(MatchWindow { skip: 6, take: 6 })), all[6..9].to_vec());
++    assert!(regex_window(Some(MatchWindow { skip: 9, take: 3 })).is_empty());
++    assert!(regex_window(Some(MatchWindow { skip: 0, take: 0 })).is_empty());
++}
++
++#[test]
++fn test_regex_window_serde() {
++    use crate::types::MatchWindow;
++    // The plugin SDK sends `params.window = { skip, take }` (camelCase JSON, as every other param).
++    let h: Handler = serde_json::from_str(
++        r#"{"type":"RECV","part":"ALL","action":{"kind":"REVEAL"},"params":{"type":"regex","regex":"a","window":{"skip":20,"take":40}}}"#,
++    )
++    .unwrap();
++    assert_eq!(h.params.unwrap().window, Some(MatchWindow { skip: 20, take: 40 }));
++    // Without a window the handler is unchanged (old plugins), and serialization omits it.
++    let h: Handler = serde_json::from_str(
++        r#"{"type":"RECV","part":"ALL","action":{"kind":"REVEAL"},"params":{"type":"regex","regex":"a"}}"#,
++    )
++    .unwrap();
++    assert_eq!(h.params.as_ref().unwrap().window, None);
++    assert!(!serde_json::to_string(&h).unwrap().contains("window"));
++    // A malformed window is refused, not silently ignored.
++    assert!(serde_json::from_str::<Handler>(
++        r#"{"type":"RECV","part":"ALL","action":{"kind":"REVEAL"},"params":{"type":"regex","regex":"a","window":{"skip":1,"count":2}}}"#,
++    )
++    .is_err());
++}
+diff --git a/crates/sdk-core/src/lib.rs b/crates/sdk-core/src/lib.rs
+index 46e3ae9..7ebd7a9 100644
+--- a/crates/sdk-core/src/lib.rs
++++ b/crates/sdk-core/src/lib.rs
+@@ -59,7 +59,7 @@ pub use io::{HyperIo, Io};
+ pub use prover::SdkProver;
+ pub use types::{
+     Body, Commit, CommitRange, ConnectionInfo, Handler, HandlerAction, HandlerParams, HandlerPart,
+-    HandlerType, HashAlgorithm, HashOpening, HttpRequest, HttpResponse, Method, PartialTranscript,
++    HandlerType, HashAlgorithm, HashOpening, HttpRequest, HttpResponse, MatchWindow, Method, PartialTranscript,
+     Reveal, RevealOutput, TlsVersion, Transcript, TranscriptLength, VerifierOutput,
+ };
+ pub use verifier::SdkVerifier;
+diff --git a/crates/sdk-core/src/types.rs b/crates/sdk-core/src/types.rs
+index 62a55db..512dade 100644
+--- a/crates/sdk-core/src/types.rs
++++ b/crates/sdk-core/src/types.rs
+@@ -435,6 +435,21 @@ pub struct HandlerParams {
+     /// Regex flags (for `All` part with `type: "regex"`).
+     #[serde(skip_serializing_if = "Option::is_none")]
+     pub flags: Option<String>,
++    /// Match window (for `All` part with `type: "regex"`): keep only the
++    /// matches with index `skip..skip + take` (0-based, in document order), so a large response's
++    /// repeated entries can be revealed one window at a time. `None` keeps every match.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub window: Option<MatchWindow>,
++}
++
++/// A window over a regex handler's matches (see [`HandlerParams::window`]).
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++pub struct MatchWindow {
++    /// Matches to skip, counted from the first match in the transcript part.
++    pub skip: usize,
++    /// Matches to keep after the skipped ones (fewer when the transcript has fewer).
++    pub take: usize,
+ }
+ 
+ /// A handler that specifies what data to extract from an HTTP transcript.

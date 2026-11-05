@@ -1,0 +1,81 @@
+Subject: [PATCH] tlsn: drain proxy plaintext before finalizing
+
+Race in the prover's Proxy-mode TLS client. When the server closes,
+`ProxyTlsClient` can start `finalize` while the last plaintext record is
+still inside rustls, because `io_from_tls_client` skipped it while the
+application held the `client_io` write lock. The transcript then fails
+("insufficient plaintext application data"); the prover drops its context
+and the verifier sees `VmError(Execute(Kind(UnexpectedEof)))`. Multi-thread
+runtimes only.
+Stay `Connected` while plaintext is left, drain until empty or Pending,
+then poll the client once more so a deferred finalize is not lost.
+
+--- a/crates/tlsn/src/prover.rs
++++ b/crates/tlsn/src/prover.rs
+@@ -304,6 +304,15 @@
+ 
+         Self::io_from_tls_client(&mut state, cx)?;
+ 
++        // A client that deferred finalizing until its plaintext was drained
++        // can finish now that `io_from_tls_client` has drained it; nothing
++        // else would wake this task for that.
++        if state.output.is_none()
++            && let Poll::Ready(output) = state.tls_client.poll(cx)?
++        {
++            *state.output = Some(output);
++        }
++
+         if *state.server_closed && state.output.is_some() {
+             ready!(state.client_io.poll_close(cx))?;
+             ready!(state.server_socket.poll_close(cx))?;
+@@ -485,15 +494,18 @@
+         }
+ 
+         // tls_client -> tls_conn
+-        // Always poll to register wakers, then check wants_read()
+-        if let Poll::Ready(mut simplex) = state.client_io.as_mut().poll_lock_write(cx)
++        // Always poll to register wakers, then check wants_read(). Drain until
++        // the client has no more plaintext or the buffer is full (which
++        // registers a waker), so none is left behind when the server closes.
++        while let Poll::Ready(mut simplex) = state.client_io.as_mut().poll_lock_write(cx)
+             && let Poll::Ready(buf) = simplex.poll_mut(cx)?
+             && state.tls_client.wants_read()
+         {
+             let read = state.tls_client.read(buf)?;
+-            if read > 0 {
+-                simplex.advance_mut(read);
++            if read == 0 {
++                break;
+             }
++            simplex.advance_mut(read);
+         }
+ 
+         Ok(())
+--- a/crates/tlsn/src/prover/client/proxy/mod.rs
++++ b/crates/tlsn/src/prover/client/proxy/mod.rs
+@@ -239,13 +239,23 @@
+                 prover,
+             } => {
+                 trace!("inner client is connected");
+-                self.conn.process_new_packets().map_err(|err| {
++                let io_state = self.conn.process_new_packets().map_err(|err| {
+                     TlsnError::internal()
+                         .with_msg("rustls error")
+                         .with_source(err)
+                 })?;
+ 
+-                if self.server_closed {
++                // The transcript needs every received record's plaintext, so
++                // finalize only once the application has drained rustls. The
++                // connection drains it after this poll and polls again.
++                if self.server_closed && io_state.plaintext_bytes_to_read() > 0 {
++                    trace!("server closed; waiting for the application to drain plaintext");
++                    self.state = State::Connected {
++                        sent_close_notify,
++                        prover,
++                    };
++                    Poll::Pending
++                } else if self.server_closed {
+                     let ms = self.ms_log.take();
+                     if ms.is_empty() {
+                         return Poll::Ready(Err(

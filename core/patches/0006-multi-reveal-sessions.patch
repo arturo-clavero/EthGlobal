@@ -1,0 +1,644 @@
+Subject: [PATCH] sdk-core: several proofs on one session
+
+`SdkProver::reveal()` proved once and closed the prover and the session;
+`SdkVerifier::verify()` verified once and closed. TLSNotary itself can prove
+the same committed transcript again (`Prover<Committed>::prove()` and
+`Verify::accept()` return to `Committed`), which lets a big response be
+disclosed in windows on one session: one TLS setup and transfer, one proof
+per window (measured: 0.12-0.32 s and 6-8 round trips per extra window,
+against 0.75-0.8 s and 31 round trips for a new session).
+
+- `SdkProver::reveal_open(reveal, commit)`: one proof, the session stays
+  open; `finish()` closes the prover and the session (refused before any
+  proof); `reveal_count()`. `reveal()` = `reveal_open` + `finish`.
+- `SdkVerifier::verify_open()`: verifies and accepts one proof, stays open;
+  `close()`; `verified_count()`. `verify()` = `verify_open` + `close`.
+- A failed proof closes the session on that side (prover: the verifier
+  rejected or the session broke; verifier: the prover left), so no handle
+  stays open on any path. An invalid range is refused before anything is
+  sent and leaves the session usable.
+- WASM: `Prover.reveal_open()`, `Prover.finish()`, `Verifier.verify_open()`,
+  `Verifier.close()` with the same semantics.
+
+Native tests (`tests/multi_reveal.rs`, Proxy mode against the upstream TLS
+fixture): four proofs of one transcript, each verifier output = that proof's
+ranges only (server identity in the first), then a clean close on both
+sides; `reveal()`/`verify()` unchanged; `finish()` before a proof refused;
+a prover that finishes ends a waiting verifier with an error, not a hang; a
+prover proving after the verifier closed fails and is closed.
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 03630e5..3d96cab 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -6464,9 +6464,11 @@ dependencies = [
+  "thiserror 1.0.69",
+  "tlsn",
+  "tlsn-core",
++ "tlsn-server-fixture",
+  "tlsn-server-fixture-certs",
+  "tlsn-tls-core",
+  "tokio",
++ "tokio-util",
+  "tracing",
+  "tracing-subscriber",
+  "wasm-bindgen-futures",
+diff --git a/crates/sdk-core/Cargo.toml b/crates/sdk-core/Cargo.toml
+index c0b2805..1962971 100644
+--- a/crates/sdk-core/Cargo.toml
++++ b/crates/sdk-core/Cargo.toml
+@@ -40,5 +40,7 @@ tracing-subscriber = { workspace = true }
+ wasm-bindgen-futures = { workspace = true, optional = true }
+ 
+ [dev-dependencies]
++tlsn-server-fixture = { workspace = true }
+ tlsn-server-fixture-certs = { workspace = true }
+-tokio = { workspace = true, features = ["rt", "macros"] }
++tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "io-util"] }
++tokio-util = { workspace = true, features = ["compat"] }
+diff --git a/crates/sdk-core/src/prover.rs b/crates/sdk-core/src/prover.rs
+index 4a0aff5..03f961b 100644
+--- a/crates/sdk-core/src/prover.rs
++++ b/crates/sdk-core/src/prover.rs
+@@ -33,6 +33,8 @@ use crate::{
+ pub struct SdkProver {
+     config: ProverConfig,
+     state: State,
++    /// Proofs made on this session.
++    reveals: usize,
+ }
+ 
+ #[allow(clippy::large_enum_variant)]
+@@ -91,6 +93,7 @@ impl SdkProver {
+         Ok(SdkProver {
+             config,
+             state: State::Initialized,
++            reveals: 0,
+         })
+     }
+ 
+@@ -355,70 +358,89 @@ impl SdkProver {
+     /// hash-committed range (in the same order as the input [`Commit`] —
+     /// sent ranges first, then recv). When `commit` is `None`, the
+     /// `commitments` vector is empty.
++    ///
++    /// Equivalent to [`reveal_open`](Self::reveal_open) followed by
++    /// [`finish`](Self::finish).
+     pub async fn reveal(&mut self, reveal: Reveal, commit: Option<Commit>) -> Result<RevealOutput> {
++        let output = self.reveal_open(reveal, commit).await?;
++        self.finish().await?;
++        Ok(output)
++    }
++
++    /// Proves one disclosure and keeps
++    /// the session open, so the same TLS transcript can be proved again
++    /// (another `reveal_open`) before [`finish`](Self::finish) closes it.
++    ///
++    /// Each call is one `prove()` on the committed prover: the verifier
++    /// verifies and accepts it and stays ready for the next. Later calls pay
++    /// only for their own AES blocks (the session's TLS setup and transfer are
++    /// not repeated). On an error the prover and the session are closed and
++    /// the prover is in the error state (no further reveal, `finish` fails).
++    pub async fn reveal_open(
++        &mut self,
++        reveal: Reveal,
++        commit: Option<Commit>,
++    ) -> Result<RevealOutput> {
+         let State::Committed { mut prover, handle } = self.state.take() else {
+             return Err(SdkError::invalid_state("prover is not in committed state"));
+         };
+ 
+-        info!("reveal() called - about to send prove request to verifier");
+-
+-        let mut builder = ProveConfig::builder(prover.transcript());
++        info!(
++            "reveal() called - about to send prove request to verifier (proof {})",
++            self.reveals
++        );
+ 
+-        for range in reveal.sent {
+-            builder.reveal_sent(&range)?;
+-        }
+-
+-        for range in reveal.recv {
+-            builder.reveal_recv(&range)?;
+-        }
+-
+-        if reveal.server_identity {
+-            builder.server_identity();
+-        }
++        let config = match build_prove_config(&prover, reveal, commit) {
++            Ok(config) => config,
++            Err(e) => {
++                // Nothing was sent: the session stays usable for a corrected reveal.
++                self.state = State::Committed { prover, handle };
++                return Err(e);
++            }
++        };
+ 
+-        // Build transcript commit config for hash-commitment ranges.
+-        if let Some(commit) = commit {
+-            let mut commit_builder =
+-                tlsn_core::transcript::TranscriptCommitConfig::builder(prover.transcript());
+-
+-            for (ranges, direction) in [
+-                (&commit.sent, tlsn_core::transcript::Direction::Sent),
+-                (&commit.recv, tlsn_core::transcript::Direction::Received),
+-            ] {
+-                for cr in ranges {
+-                    let alg: tlsn_core::hash::HashAlgId = cr.algorithm.into();
+-                    let kind = tlsn_core::transcript::TranscriptCommitmentKind::Hash { alg };
+-                    commit_builder
+-                        .commit_with_kind(cr.range(), direction, kind)
+-                        .map_err(|e| SdkError::config(e.to_string()))?;
+-                }
++        let prover_output = match prover.prove(&config).await {
++            Ok(output) => output,
++            Err(e) => {
++                // The verifier rejected or the session broke: close everything.
++                let _ = prover.close().await;
++                handle.close();
++                return Err(SdkError::protocol(e.to_string()));
+             }
++        };
+ 
+-            builder.transcript_commit(
+-                commit_builder
+-                    .build()
+-                    .map_err(|e| SdkError::config(e.to_string()))?,
+-            );
+-        }
++        self.reveals += 1;
++        self.state = State::Committed { prover, handle };
+ 
+-        let config = builder.build()?;
++        build_reveal_output(prover_output)
++    }
+ 
+-        let prover_output = prover
+-            .prove(&config)
+-            .await
+-            .map_err(|e| SdkError::protocol(e.to_string()))?;
+-        prover
+-            .close()
+-            .await
+-            .map_err(|e| SdkError::protocol(e.to_string()))?;
++    /// Closes the prover and the session
++    /// after one or more [`reveal_open`](Self::reveal_open) calls. Fails when
++    /// nothing was revealed yet or the prover is not committed.
++    pub async fn finish(&mut self) -> Result<()> {
++        let State::Committed { prover, handle } = self.state.take() else {
++            return Err(SdkError::invalid_state("prover is not in committed state"));
++        };
++        if self.reveals == 0 {
++            // Keep the session: finishing before any reveal is a caller error.
++            self.state = State::Committed { prover, handle };
++            return Err(SdkError::invalid_state("nothing was revealed yet"));
++        }
+ 
++        let closed = prover.close().await;
+         handle.close();
+ 
+-        info!("finalized");
++        info!("finalized after {} reveal(s)", self.reveals);
+ 
++        closed.map_err(|e| SdkError::protocol(e.to_string()))?;
+         self.state = State::Complete;
++        Ok(())
++    }
+ 
+-        build_reveal_output(prover_output)
++    /// The number of proofs this prover has made.
++    pub fn reveal_count(&self) -> usize {
++        self.reveals
+     }
+ 
+     /// Returns true if the prover has completed the protocol.
+@@ -427,6 +449,55 @@ impl SdkProver {
+     }
+ }
+ 
++/// The prove configuration of one disclosure (reveal ranges, server identity
++/// and optional hash commitments) over the prover's transcript.
++fn build_prove_config(
++    prover: &Prover<state::Committed>,
++    reveal: Reveal,
++    commit: Option<Commit>,
++) -> Result<ProveConfig> {
++    let mut builder = ProveConfig::builder(prover.transcript());
++
++    for range in reveal.sent {
++        builder.reveal_sent(&range)?;
++    }
++
++    for range in reveal.recv {
++        builder.reveal_recv(&range)?;
++    }
++
++    if reveal.server_identity {
++        builder.server_identity();
++    }
++
++    // Build transcript commit config for hash-commitment ranges.
++    if let Some(commit) = commit {
++        let mut commit_builder =
++            tlsn_core::transcript::TranscriptCommitConfig::builder(prover.transcript());
++
++        for (ranges, direction) in [
++            (&commit.sent, tlsn_core::transcript::Direction::Sent),
++            (&commit.recv, tlsn_core::transcript::Direction::Received),
++        ] {
++            for cr in ranges {
++                let alg: tlsn_core::hash::HashAlgId = cr.algorithm.into();
++                let kind = tlsn_core::transcript::TranscriptCommitmentKind::Hash { alg };
++                commit_builder
++                    .commit_with_kind(cr.range(), direction, kind)
++                    .map_err(|e| SdkError::config(e.to_string()))?;
++            }
++        }
++
++        builder.transcript_commit(
++            commit_builder
++                .build()
++                .map_err(|e| SdkError::config(e.to_string()))?,
++        );
++    }
++
++    Ok(builder.build()?)
++}
++
+ fn build_reveal_output(output: ProverOutput) -> Result<RevealOutput> {
+     let ProverOutput {
+         transcript_commitments,
+diff --git a/crates/sdk-core/src/verifier.rs b/crates/sdk-core/src/verifier.rs
+index 57beec0..fbb4616 100644
+--- a/crates/sdk-core/src/verifier.rs
++++ b/crates/sdk-core/src/verifier.rs
+@@ -23,6 +23,8 @@ use crate::{
+ pub struct SdkVerifier {
+     config: VerifierConfig,
+     state: State,
++    /// Proofs accepted on this session.
++    verified: usize,
+ }
+ 
+ #[allow(clippy::large_enum_variant)]
+@@ -75,6 +77,7 @@ impl SdkVerifier {
+         SdkVerifier {
+             state: State::Initialized,
+             config,
++            verified: 0,
+         }
+     }
+ 
+@@ -241,7 +244,23 @@ impl SdkVerifier {
+     }
+ 
+     /// Verifies the connection and finalizes the protocol.
++    ///
++    /// Equivalent to [`verify_open`](Self::verify_open) followed by
++    /// [`close`](Self::close).
+     pub async fn verify(&mut self) -> Result<VerifierOutput> {
++        let output = self.verify_open().await?;
++        self.close().await?;
++        info!("verification complete");
++        Ok(output)
++    }
++
++    /// Verifies and accepts ONE prove
++    /// request and keeps the session open for the next one. Call it once per
++    /// prover `reveal_open`, then [`close`](Self::close). Each output covers
++    /// only that proof's disclosure (`server_name` is `None` when that proof
++    /// did not prove the server identity). On an error the session is closed
++    /// and the verifier is in the error state.
++    pub async fn verify_open(&mut self) -> Result<VerifierOutput> {
+         let State::Committed { verifier, handle } = self.state.take() else {
+             return Err(SdkError::invalid_state("verifier is not in accepted state"));
+         };
+@@ -271,23 +290,20 @@ impl SdkVerifier {
+             },
+         };
+ 
+-        let (output, verifier) = verifier
+-            .verify()
+-            .await
+-            .map_err(|e| SdkError::protocol(e.to_string()))?
+-            .accept()
+-            .await
+-            .map_err(|e| SdkError::protocol(e.to_string()))?;
+-        verifier
+-            .close()
+-            .await
+-            .map_err(|e| SdkError::protocol(e.to_string()))?;
+-
+-        handle.close();
+-
+-        self.state = State::Complete;
++        let accepted = match verifier.verify().await {
++            Ok(pending) => pending.accept().await,
++            Err(e) => Err(e),
++        };
++        let (output, verifier) = match accepted {
++            Ok(accepted) => accepted,
++            Err(e) => {
++                handle.close();
++                return Err(SdkError::protocol(e.to_string()));
++            }
++        };
+ 
+-        info!("verification complete");
++        self.verified += 1;
++        self.state = State::Committed { verifier, handle };
+ 
+         Ok(VerifierOutput {
+             server_name: output.server_name.map(|name| {
+@@ -299,6 +315,25 @@ impl SdkVerifier {
+         })
+     }
+ 
++    /// Closes the session after one or
++    /// more [`verify_open`](Self::verify_open) calls.
++    pub async fn close(&mut self) -> Result<()> {
++        let State::Committed { verifier, handle } = self.state.take() else {
++            return Err(SdkError::invalid_state("verifier is not in accepted state"));
++        };
++        let closed = verifier.close().await;
++        handle.close();
++        closed.map_err(|e| SdkError::protocol(e.to_string()))?;
++        self.state = State::Complete;
++        info!("session closed after {} proof(s)", self.verified);
++        Ok(())
++    }
++
++    /// The number of proofs this verifier accepted.
++    pub fn verified_count(&self) -> usize {
++        self.verified
++    }
++
+     /// Returns true if the verifier has completed the protocol.
+     pub fn is_complete(&self) -> bool {
+         matches!(self.state, State::Complete)
+diff --git a/crates/sdk-core/tests/multi_reveal.rs b/crates/sdk-core/tests/multi_reveal.rs
+new file mode 100644
+index 0000000..442a8f6
+--- /dev/null
++++ b/crates/sdk-core/tests/multi_reveal.rs
+@@ -0,0 +1,180 @@
++//! Several proofs on one session.
++//!
++//! A native Proxy-mode session against the upstream TLS fixture (in-memory duplexes): the prover proves several
++//! disclosures of ONE transcript with `reveal_open`, the verifier verifies each with `verify_open`, and both close.
++
++use std::{ops::Range, time::Duration};
++
++use tlsn_sdk_core::{
++    HttpRequest, ProverConfig, ProverMode, Reveal, SdkProver, SdkVerifier, VerifierConfig, VerifierOutput,
++};
++use tlsn_server_fixture::bind;
++use tlsn_server_fixture_certs::{CA_CERT_DER, SERVER_DOMAIN};
++use tokio_util::compat::TokioAsyncReadCompatExt;
++
++const BODY: usize = 4096;
++const LIMIT: Duration = Duration::from_secs(120);
++
++/// A prover with the fixture's response in its transcript and a verifier that has run the TLS session, both
++/// committed and ready to prove / verify.
++async fn committed() -> (SdkProver, SdkVerifier, usize) {
++    let (p_io, v_io) = tokio::io::duplex(1 << 23);
++    let (client_io, server_io) = tokio::io::duplex(1 << 20);
++    tokio::spawn(async move {
++        let _ = bind(server_io.compat()).await;
++    });
++
++    let mut prover = SdkProver::new(
++        ProverConfig::builder(SERVER_DOMAIN)
++            .mode(ProverMode::Proxy)
++            .root_certs(vec![CA_CERT_DER.to_vec()])
++            .build()
++            .unwrap(),
++    )
++    .unwrap();
++    let mut verifier = SdkVerifier::new(
++        VerifierConfig::builder()
++            .max_sent_data(4096)
++            .max_recv_data(1 << 16)
++            .root_certs(vec![CA_CERT_DER.to_vec()])
++            .build()
++            .unwrap(),
++    );
++
++    let prove = async {
++        prover.setup(p_io.compat()).await.unwrap();
++        let request = HttpRequest::get(format!("/bytes?size={BODY}"))
++            .header("Host", SERVER_DOMAIN)
++            .header("Connection", "close");
++        let response = prover.send_request_proxy(request).await.unwrap();
++        assert_eq!(response.status, 200);
++    };
++    let verify = async {
++        verifier.connect(v_io.compat()).await.unwrap();
++        let server = verifier.setup().await.unwrap();
++        assert_eq!(server.as_deref(), Some(SERVER_DOMAIN));
++        verifier.set_server_socket(client_io.compat()).unwrap();
++        verifier.run().await.unwrap();
++    };
++    tokio::time::timeout(LIMIT, async { tokio::join!(prove, verify) })
++        .await
++        .expect("session setup stalled");
++    let recv_len = prover.transcript().unwrap().recv.len();
++    assert!(recv_len > BODY);
++    (prover, verifier, recv_len)
++}
++
++/// One proof on each side at once.
++async fn prove_once(
++    prover: &mut SdkProver,
++    verifier: &mut SdkVerifier,
++    reveal: Reveal,
++) -> VerifierOutput {
++    let (p, v) = tokio::time::timeout(LIMIT, async {
++        tokio::join!(prover.reveal_open(reveal, None), verifier.verify_open())
++    })
++    .await
++    .expect("proof stalled");
++    p.unwrap();
++    v.unwrap()
++}
++
++fn recv_authed(output: &VerifierOutput) -> Vec<Range<usize>> {
++    output.transcript.as_ref().unwrap().recv_authed.clone()
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn several_reveals_give_one_output_each_then_close() {
++    let (mut prover, mut verifier, recv_len) = committed().await;
++    let sets: Vec<Vec<Range<usize>>> = vec![
++        vec![0..15, 200..264],
++        vec![1000..1040, 1100..1110],
++        // An AES block an earlier proof already revealed (1000..1040 shares 1024..1040).
++        vec![1030..1060],
++        vec![recv_len - 32..recv_len],
++    ];
++    for (i, set) in sets.iter().enumerate() {
++        let mut reveal = Reveal::new().server_identity(i == 0);
++        if i == 0 {
++            reveal = reveal.sent(0..10);
++        }
++        for r in set {
++            reveal = reveal.recv(r.clone());
++        }
++        let out = prove_once(&mut prover, &mut verifier, reveal).await;
++        // Each output is that proof's disclosure only.
++        assert_eq!(recv_authed(&out), *set, "reveal {i}");
++        assert_eq!(out.server_name.as_deref(), (i == 0).then_some(SERVER_DOMAIN), "reveal {i}");
++        let sent = &out.transcript.as_ref().unwrap().sent_authed;
++        assert_eq!(sent, &if i == 0 { vec![0..10] } else { vec![] }, "reveal {i}");
++        assert_eq!(out.connection_info.transcript_length.recv as usize, recv_len);
++        assert!(!prover.is_complete() && !verifier.is_complete());
++    }
++    assert_eq!(prover.reveal_count(), sets.len());
++    assert_eq!(verifier.verified_count(), sets.len());
++
++    let (p, v) = tokio::join!(prover.finish(), verifier.close());
++    p.unwrap();
++    v.unwrap();
++    assert!(prover.is_complete() && verifier.is_complete());
++    // Closed: nothing more on either side.
++    assert!(prover.reveal_open(Reveal::new().recv(0..4), None).await.is_err());
++    assert!(verifier.verify_open().await.is_err());
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn single_reveal_is_unchanged() {
++    let (mut prover, mut verifier, _) = committed().await;
++    let reveal = Reveal::new().server_identity(true).sent(0..10).recv(0..15);
++    let (p, v) = tokio::time::timeout(LIMIT, async {
++        tokio::join!(prover.reveal(reveal, None), verifier.verify())
++    })
++    .await
++    .expect("proof stalled");
++    p.unwrap();
++    let out = v.unwrap();
++    assert_eq!(recv_authed(&out), vec![0..15]);
++    assert_eq!(out.server_name.as_deref(), Some(SERVER_DOMAIN));
++    assert!(prover.is_complete() && verifier.is_complete());
++    assert_eq!(prover.reveal_count(), 1);
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn finish_before_any_reveal_is_refused_and_the_session_stays_usable() {
++    let (mut prover, mut verifier, _) = committed().await;
++    let err = prover.finish().await.unwrap_err();
++    assert!(err.to_string().contains("nothing was revealed"), "{err}");
++    // An invalid range is refused before anything is sent; the session stays usable too.
++    assert!(prover.reveal_open(Reveal::new().recv(0..usize::MAX), None).await.is_err());
++    let out = prove_once(&mut prover, &mut verifier, Reveal::new().server_identity(true).recv(0..15)).await;
++    assert_eq!(recv_authed(&out), vec![0..15]);
++    let (p, v) = tokio::join!(prover.finish(), verifier.close());
++    p.unwrap();
++    v.unwrap();
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn a_verifier_waiting_for_another_proof_ends_when_the_prover_finishes() {
++    let (mut prover, mut verifier, _) = committed().await;
++    prove_once(&mut prover, &mut verifier, Reveal::new().server_identity(true).recv(0..15)).await;
++    prover.finish().await.unwrap();
++    // The prover closed its session: the waiting verifier fails (no hang) and is closed.
++    let waited = tokio::time::timeout(LIMIT, verifier.verify_open()).await.expect("verifier hung");
++    assert!(waited.is_err());
++    assert!(verifier.close().await.is_err(), "already closed by the failed wait");
++    assert!(!verifier.is_complete());
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn a_prover_proving_after_the_verifier_closed_fails_and_is_closed() {
++    let (mut prover, mut verifier, _) = committed().await;
++    prove_once(&mut prover, &mut verifier, Reveal::new().server_identity(true).recv(0..15)).await;
++    verifier.close().await.unwrap();
++    let proved = tokio::time::timeout(LIMIT, prover.reveal_open(Reveal::new().recv(20..30), None))
++        .await
++        .expect("prover hung");
++    assert!(proved.is_err());
++    // The failed reveal closed the prover: no finish, no further reveal.
++    assert!(prover.finish().await.is_err());
++    assert!(prover.reveal_open(Reveal::new().recv(20..30), None).await.is_err());
++}
+diff --git a/crates/wasm/src/prover/mod.rs b/crates/wasm/src/prover/mod.rs
+index 56bbb57..2eab027 100644
+--- a/crates/wasm/src/prover/mod.rs
++++ b/crates/wasm/src/prover/mod.rs
+@@ -151,6 +151,42 @@ impl JsProver {
+ 
+         Ok(convert_reveal_output(output))
+     }
++
++    /// Proves one disclosure and keeps
++    /// the session open, so the same transcript can be proved again with
++    /// another `reveal_open` before `finish()`. Same arguments and output as
++    /// `reveal`. On an error the session is closed.
++    pub async fn reveal_open(
++        &mut self,
++        reveal: Reveal,
++        commit: Option<Commit>,
++    ) -> Result<RevealOutput> {
++        self.emit_progress("REVEAL", 0.7, "Proving and revealing data...");
++
++        let core_reveal = convert_reveal(reveal);
++        let core_commit = commit.map(convert_commit);
++
++        let output = self
++            .inner
++            .reveal_open(core_reveal, core_commit)
++            .await
++            .map_err(|e| JsError::new(&e.to_string()))?;
++
++        self.emit_progress("REVEALED", 0.9, "Disclosure proved");
++
++        Ok(convert_reveal_output(output))
++    }
++
++    /// Closes the prover and the
++    /// session after one or more `reveal_open` calls.
++    pub async fn finish(&mut self) -> Result<()> {
++        self.inner
++            .finish()
++            .await
++            .map_err(|e| JsError::new(&e.to_string()))?;
++        self.emit_progress("FINALIZED", 0.95, "Protocol finalized");
++        Ok(())
++    }
+ }
+ 
+ impl JsProver {
+diff --git a/crates/wasm/src/verifier/mod.rs b/crates/wasm/src/verifier/mod.rs
+index 8f7eadb..1c620a8 100644
+--- a/crates/wasm/src/verifier/mod.rs
++++ b/crates/wasm/src/verifier/mod.rs
+@@ -94,6 +94,26 @@ impl JsVerifier {
+             .map_err(|e| JsError::new(&e.to_string()))?;
+         Ok(convert_verifier_output(core_output))
+     }
++
++    /// Verifies one proof and keeps
++    /// the session open for the next; call `close()` after the last.
++    pub async fn verify_open(&mut self) -> Result<VerifierOutput> {
++        let core_output = self
++            .inner
++            .verify_open()
++            .await
++            .map_err(|e| JsError::new(&e.to_string()))?;
++        Ok(convert_verifier_output(core_output))
++    }
++
++    /// Closes the session after one or
++    /// more `verify_open` calls.
++    pub async fn close(&mut self) -> Result<()> {
++        self.inner
++            .close()
++            .await
++            .map_err(|e| JsError::new(&e.to_string()))
++    }
+ }
+ 
+ // Conversion functions between WASM types and sdk-core types.
