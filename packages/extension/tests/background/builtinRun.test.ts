@@ -23,6 +23,9 @@ import {
   senderProductOrigin,
 } from '../../src/background/autoApproval';
 import { parseProductOrigins } from '../../src/constants/productOrigins';
+import { MAX_METHODS, methodSlots } from '../../src/constants/builtinPlugins';
+import { validateProvePermission } from '../../src/offscreen/permissionValidator';
+import { METHOD_PARAMS, METHOD_URLS, TEMPLATE_METHODS } from '../helpers/builtinRunFixture';
 import {
   builtIn,
   EXT_ID,
@@ -310,5 +313,318 @@ describe('autoApprovalFor (RUN_BUILTIN)', () => {
       _autoApproved: '1',
     });
     expect(checkPageSessionData(undefined)).toEqual({});
+  });
+});
+
+// One window, a URL pair per method. Each proof
+// keeps its own upgrade token; every per-method URL gets the run pair's checks.
+describe('per-method URL pairs (one window, each proof its own token)', () => {
+  const LAYOUT = pluginLayout(TEMPLATE_METHODS);
+  const TWO = builtIn(TEMPLATE_METHODS);
+  const RUN_PAIR = {
+    verifierUrl: 'http://localhost:7048',
+    proxyUrl: 'ws://localhost:7048/proxy?token=',
+  };
+  const values = (methodUrls: unknown = METHOD_URLS) => ({
+    ...RUN_PAIR,
+    params: JSON.stringify(METHOD_PARAMS),
+    methodUrls,
+  });
+  // What a split/join of each method's placeholders would give.
+  const reference = (pairs: Record<string, { verifierUrl: string; proxyUrl: string }>) => {
+    let code = TEMPLATE_METHODS;
+    for (const [method, pair] of Object.entries(pairs)) {
+      const [v, p] = methodSlots(method);
+      code = code.split(v).join(pair.verifierUrl).split(p).join(pair.proxyUrl);
+    }
+    return code.replace(/(["'])__PLUGIN_PARAMS__\1/, () =>
+      JSON.stringify(JSON.stringify(METHOD_PARAMS)),
+    );
+  };
+  /** Evaluates the filled bundle: its permissions and the prove() calls it makes. */
+  const evaluate = async (code: string) => {
+    const calls: Array<{ req: { url: string; method: string }; opts: Record<string, unknown> }> =
+      [];
+    const prove = async (req: { url: string; method: string }, opts: Record<string, unknown>) => {
+      calls.push({ req, opts });
+    };
+    const body = code.replace(/export \{ plugin_default as default \};/, 'return plugin_default;');
+    const plugin = new Function('prove', body)(prove) as {
+      onClick: () => Promise<void>;
+      config: { requests: unknown[] };
+    };
+    await plugin.onClick();
+    return { calls, config: plugin.config };
+  };
+
+  it('lays out both halves of every method pair, no run pair needed', () => {
+    const slots = LAYOUT.filter((x) => typeof x === 'string');
+    expect([...new Set(slots)].sort()).toEqual(
+      [
+        '"__PLUGIN_PARAMS__"',
+        ...methodSlots('EXAMPLE_WORK'),
+        ...methodSlots('EXAMPLE_MEMBERSHIP'),
+      ].sort(),
+    );
+    expect(parseBuiltInPlugins(JSON.stringify([TWO, PLUGIN]))).toEqual([TWO, PLUGIN]);
+  });
+
+  it("fills each method's slots with its own pair (byte for byte), and maps back to the template", () => {
+    const code = substitutePlugin(TEMPLATE_METHODS, LAYOUT, values());
+    expect(code).toBe(reference(METHOD_URLS));
+    expect(canonicalizePlugin(code!, LAYOUT)).toBe(TEMPLATE_METHODS);
+  });
+
+  it('each prove() carries its own token URLs and passes the permission of its own method only', async () => {
+    const { calls, config } = await evaluate(substitutePlugin(TEMPLATE_METHODS, LAYOUT, values())!);
+    expect(calls.map((c) => [c.opts.verifierUrl, c.opts.proxyUrl, c.opts.sessionData])).toEqual([
+      [
+        METHOD_URLS.EXAMPLE_WORK.verifierUrl,
+        `${METHOD_URLS.EXAMPLE_WORK.proxyUrl}github.com`,
+        { proofId: 'pr-proof' },
+      ],
+      [
+        METHOD_URLS.EXAMPLE_MEMBERSHIP.verifierUrl,
+        `${METHOD_URLS.EXAMPLE_MEMBERSHIP.proxyUrl}github.com`,
+        { proofId: 'org-proof' },
+      ],
+    ]);
+    const urls = (c: (typeof calls)[number]) => ({
+      verifierUrl: String(c.opts.verifierUrl),
+      proxyUrl: String(c.opts.proxyUrl),
+    });
+    for (const c of calls) {
+      expect(() => validateProvePermission(c.req, urls(c), config as never)).not.toThrow();
+    }
+    // The other proof's token URLs never pass this request's permission.
+    expect(() => validateProvePermission(calls[0].req, urls(calls[1]), config as never)).toThrow(
+      /Permission denied/,
+    );
+    expect(() => validateProvePermission(calls[1].req, urls(calls[0]), config as never)).toThrow(
+      /Permission denied/,
+    );
+  });
+
+  it('a bundle with only per-method slots needs a pair for every method (no fallback to another token)', () => {
+    const only = { EXAMPLE_WORK: METHOD_URLS.EXAMPLE_WORK };
+    for (const methodUrls of [only, undefined]) {
+      const run = { ...values(), methodUrls };
+      expect(checkRunValues(run, LAYOUT)).toBeNull();
+      expect(substitutePlugin(TEMPLATE_METHODS, LAYOUT, run)).toBeNull();
+      // Refused in the background, before any window opens.
+      expect(
+        autoApprovalFor(
+          runRequest({
+            fingerprint: TWO.sha256,
+            params: JSON.stringify(METHOD_PARAMS),
+            methodUrls,
+          }),
+          topFrame('http://localhost:5175'),
+          EXT_ID,
+          ORIGINS,
+          [TWO],
+        ),
+      ).toEqual({ ok: false, error: 'BAD_VALUES' });
+    }
+    // Without a layout only the shape is checked (the background and offscreen always pass one).
+    expect(checkRunValues(values(only))).not.toBeNull();
+  });
+
+  it("in a bundle that also has the run pair, a method the page does not name gets the run's pair", () => {
+    const mixed = TEMPLATE_METHODS.split('__VERIFIER_URL_EXAMPLE_WORK__')
+      .join('__VERIFIER_URL__')
+      .split('__PROXY_URL_EXAMPLE_WORK__')
+      .join('__PROXY_URL__');
+    const only = { EXAMPLE_MEMBERSHIP: METHOD_URLS.EXAMPLE_MEMBERSHIP };
+    const [v, p] = methodSlots('EXAMPLE_MEMBERSHIP');
+    const expected = mixed
+      .split(v)
+      .join(only.EXAMPLE_MEMBERSHIP.verifierUrl)
+      .split(p)
+      .join(only.EXAMPLE_MEMBERSHIP.proxyUrl)
+      .split('__VERIFIER_URL__')
+      .join(RUN_PAIR.verifierUrl)
+      .split('__PROXY_URL__')
+      .join(RUN_PAIR.proxyUrl)
+      .replace(/(["'])__PLUGIN_PARAMS__\1/, () => JSON.stringify(JSON.stringify(METHOD_PARAMS)));
+    expect(substitutePlugin(mixed, pluginLayout(mixed), values(only))).toBe(expected);
+  });
+
+  it('the canonicalizePlugin round trip refuses a fill that does not map back to the template', () => {
+    // A hand-made layout (never what pluginLayout gives) where a URL slot is followed by a URL
+    // character: the filled URL would swallow it, so the result is not this template plus data.
+    const template =
+      'var v = "__VERIFIER_URL__"; var p = __PROXY_URL__x; var j = JSON.parse("__PLUGIN_PARAMS__");';
+    const layout = (t: string) => {
+      const out: Array<number | string> = [];
+      let pos = 0;
+      for (const slot of ['__VERIFIER_URL__', '__PROXY_URL__', '"__PLUGIN_PARAMS__"']) {
+        const at = t.indexOf(slot, pos);
+        out.push(at - pos, slot);
+        pos = at + slot.length;
+      }
+      out.push(t.length - pos);
+      return out;
+    };
+    const run = { ...RUN_PAIR, params: '{}' };
+    expect(substitutePlugin(template, layout(template), run)).toBeNull();
+    // Control: the same layout with a non-URL character after the slot fills fine.
+    const ok = template.replace('__PROXY_URL__x', '__PROXY_URL__ ');
+    expect(substitutePlugin(ok, layout(ok), run)).toBe(
+      ok
+        .replace('__VERIFIER_URL__', RUN_PAIR.verifierUrl)
+        .replace('__PROXY_URL__', RUN_PAIR.proxyUrl)
+        .replace('"__PLUGIN_PARAMS__"', JSON.stringify('{}')),
+    );
+  });
+
+  it(`refuses to lay out a bundle with more than ${MAX_METHODS} methods`, () => {
+    const pairs = (n: number) =>
+      Array.from({ length: n }, (_, i) => {
+        const [v, p] = methodSlots(`M${i}`);
+        return `prove({}, { verifierUrl: "${v}", proxyUrl: "${p}" });`;
+      }).join('\n');
+    const bundle = (n: number) => `var RUN = JSON.parse("__PLUGIN_PARAMS__");\n${pairs(n)}\n`;
+    expect(pluginLayout(bundle(MAX_METHODS)).filter((x) => typeof x === 'string')).toHaveLength(
+      2 * MAX_METHODS + 1,
+    );
+    expect(() => pluginLayout(bundle(MAX_METHODS + 1))).toThrow(/more than 8 methods/);
+  });
+
+  it('the run-pair bundle (the previous release) is unchanged and takes no method it does not have', () => {
+    const legacy = pluginLayout(TEMPLATE);
+    expect(substitutePlugin(TEMPLATE, legacy, VALUES)).toBe(
+      preparePluginCode(TEMPLATE, {
+        verifierUrl: VALUES.verifierUrl,
+        proxyUrl: VALUES.proxyUrl,
+        params: PARAMS,
+      }),
+    );
+    expect(substitutePlugin(TEMPLATE, legacy, { ...VALUES, methodUrls: METHOD_URLS })).toBeNull();
+    expect(checkRunValues({ ...VALUES, methodUrls: METHOD_URLS }, legacy)).toBeNull();
+  });
+
+  const BAD_URLS: Array<[string, unknown]> = [
+    ['a URL that leaves its literal', 'http://x" + evil() + "'],
+    ['a URL with a backslash', 'ws://x\\u0022'],
+    ['a URL with whitespace', 'http://x y'],
+    ['a javascript: URL', 'javascript:alert(1)'],
+    ['an empty URL', ''],
+    ['a URL as a number', 7048],
+    ['a URL over 2048 characters', `http://x/${'a'.repeat(2048)}`],
+  ];
+  for (const [label, bad] of BAD_URLS) {
+    for (const half of ['verifierUrl', 'proxyUrl'] as const) {
+      it(`refuses a per-method ${half}: ${label} (the run pair's check)`, () => {
+        const methodUrls = {
+          ...METHOD_URLS,
+          EXAMPLE_MEMBERSHIP: { ...METHOD_URLS.EXAMPLE_MEMBERSHIP, [half]: bad },
+        };
+        expect(checkRunValues({ ...RUN_PAIR, [half]: bad, params: '{}' })).toBeNull();
+        expect(checkRunValues(values(methodUrls))).toBeNull();
+        expect(substitutePlugin(TEMPLATE_METHODS, LAYOUT, values(methodUrls))).toBeNull();
+      });
+    }
+  }
+
+  it('refuses malformed methodUrls', () => {
+    const pr = METHOD_URLS.EXAMPLE_WORK;
+    const many = Object.fromEntries(
+      Array.from({ length: MAX_METHODS + 1 }, (_, i) => [`M${i}`, pr]),
+    );
+    for (const bad of [
+      null,
+      'EXAMPLE_WORK',
+      [pr],
+      {},
+      many,
+      { example_work: pr },
+      JSON.parse(`{"__proto__": ${JSON.stringify(pr)}}`),
+      { GITHUB__PR: pr },
+      { EXAMPLE_: pr },
+      { _GITHUB: pr },
+      { 'GITHUB-PR': pr },
+      { [`A${'B'.repeat(64)}`]: pr },
+      { EXAMPLE_WORK: null },
+      { EXAMPLE_WORK: 'http://x' },
+      { EXAMPLE_WORK: [pr.verifierUrl, pr.proxyUrl] },
+      { EXAMPLE_WORK: { verifierUrl: pr.verifierUrl } },
+      { EXAMPLE_WORK: { ...pr, code: 'steal()' } },
+      { EXAMPLE_WORK: { ...pr, verifierUrl: undefined } },
+    ]) {
+      expect(checkRunValues(values(bad))).toBeNull();
+      expect(substitutePlugin(TEMPLATE_METHODS, LAYOUT, values(bad))).toBeNull();
+    }
+    // A method this bundle does not have is refused once the layout is known.
+    const other = { ...METHOD_URLS, EXAMPLE_OTHER: pr };
+    expect(checkRunValues(values(other))).not.toBeNull();
+    expect(checkRunValues(values(other), LAYOUT)).toBeNull();
+    expect(substitutePlugin(TEMPLATE_METHODS, LAYOUT, values(other))).toBeNull();
+  });
+
+  it('refuses to lay out a bundle with half a pair or a non-literal method placeholder', () => {
+    expect(() =>
+      pluginLayout(
+        TEMPLATE_METHODS.split('__PROXY_URL_EXAMPLE_MEMBERSHIP__').join(
+          '__PROXY_URL_EXAMPLE_WORK__',
+        ),
+      ),
+    ).toThrow(/__PROXY_URL_EXAMPLE_MEMBERSHIP__ missing/);
+    expect(() =>
+      pluginLayout(
+        TEMPLATE_METHODS.replace(
+          '"__PROXY_URL_EXAMPLE_WORK__" + HOST',
+          '`__PROXY_URL_EXAMPLE_WORK__${HOST}`',
+        ),
+      ),
+    ).toThrow(/string literal/);
+    expect(() =>
+      pluginLayout(
+        TEMPLATE_METHODS.replace(
+          '"__VERIFIER_URL_EXAMPLE_WORK__"',
+          '"__VERIFIER_URL_EXAMPLE_WORK__x"',
+        ),
+      ),
+    ).toThrow(/string literal/);
+    // The run pair stays all or nothing.
+    expect(() => pluginLayout(TEMPLATE.split('"__PROXY_URL__"').join('"x"'))).toThrow(
+      /__PROXY_URL__ missing/,
+    );
+  });
+
+  it('an index entry with a malformed method slot is refused (fail closed)', () => {
+    for (const slot of ['__VERIFIER_URL_bad__', '__VERIFIER_URL___', '__TOKEN_URL_A__']) {
+      expect(parseBuiltInPlugins(JSON.stringify([{ ...TWO, layout: [1, slot, 2] }]))).toEqual([]);
+    }
+  });
+
+  it('autoApprovalFor: one RUN_BUILTIN with both pairs runs; a method this version lacks is BAD_VALUES', () => {
+    const page = topFrame('http://localhost:5175');
+    const request = runRequest({
+      fingerprint: TWO.sha256,
+      params: JSON.stringify(METHOD_PARAMS),
+      methodUrls: METHOD_URLS,
+    });
+    const approval = autoApprovalFor(request, page, EXT_ID, ORIGINS, [TWO]);
+    expect(approval.ok && approval.values).toEqual({
+      verifierUrl: VALUES.verifierUrl,
+      proxyUrl: VALUES.proxyUrl,
+      params: JSON.stringify(METHOD_PARAMS),
+      methodUrls: METHOD_URLS,
+    });
+    for (const methodUrls of [
+      { ...METHOD_URLS, EXAMPLE_OTHER: METHOD_URLS.EXAMPLE_WORK },
+      { EXAMPLE_WORK: { verifierUrl: 'http://x y', proxyUrl: 'ws://x' } },
+      null,
+    ]) {
+      expect(autoApprovalFor({ ...request, methodUrls }, page, EXT_ID, ORIGINS, [TWO])).toEqual({
+        ok: false,
+        error: 'BAD_VALUES',
+      });
+    }
+    // The previous release's bundle has no method slots: per-method pairs are refused for it.
+    expect(
+      autoApprovalFor(runRequest({ methodUrls: METHOD_URLS }), page, EXT_ID, ORIGINS, PLUGINS),
+    ).toEqual({ ok: false, error: 'BAD_VALUES' });
   });
 });

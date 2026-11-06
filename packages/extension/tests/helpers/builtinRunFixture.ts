@@ -35,6 +35,49 @@ export const TEMPLATE = [
   '',
 ].join('\n');
 
+// Shaped like the bundle with a URL pair per method (two checks in order,
+// each with its own upgrade token in its URLs).
+export const TEMPLATE_METHODS = [
+  '// src/verification-plugins/example-work/plugin.ts',
+  'var RUN = JSON.parse("__PLUGIN_PARAMS__");',
+  'var HOST = "github.com";',
+  'var perm = (pathname) => ({ method: "GET", host: HOST, pathname, verifierUrl: "__VERIFIER_URL_EXAMPLE_WORK__", proxyUrl: "__PROXY_URL_EXAMPLE_WORK__" + HOST });',
+  'var perm2 = (pathname) => ({ method: "GET", host: HOST, pathname, verifierUrl: "__VERIFIER_URL_EXAMPLE_MEMBERSHIP__", proxyUrl: "__PROXY_URL_EXAMPLE_MEMBERSHIP__" + HOST });',
+  'var config = { name: "GitHub private work", requests: [perm("/search"), perm2("/orgs/*/people")] };',
+  'function main() { return null; }',
+  'async function onClick() {',
+  '  await prove({ url: "https://github.com/search", method: "GET" }, {',
+  '    verifierUrl: "__VERIFIER_URL_EXAMPLE_WORK__",',
+  '    proxyUrl: "__PROXY_URL_EXAMPLE_WORK__" + HOST,',
+  '    sessionData: { proofId: RUN.prWork.proofId },',
+  '  });',
+  '  await prove({ url: "https://github.com/orgs/acme/people", method: "GET" }, {',
+  '    verifierUrl: "__VERIFIER_URL_EXAMPLE_MEMBERSHIP__",',
+  '    proxyUrl: "__PROXY_URL_EXAMPLE_MEMBERSHIP__" + HOST,',
+  '    sessionData: { proofId: RUN.membership.proofId },',
+  '  });',
+  '}',
+  'var plugin_default = { main, onClick, config };',
+  'export { plugin_default as default };',
+  '',
+].join('\n');
+
+/** Two proofs in one window, each with its own token (as the server issues them). */
+export const METHOD_URLS = {
+  EXAMPLE_WORK: {
+    verifierUrl: 'http://localhost:7048/v/0.1.0.1501/t/1790000000.pr-proof.TokPr_1',
+    proxyUrl: 'ws://localhost:7048/v/0.1.0.1501/t/1790000000.pr-proof.TokPr_1/proxy?token=',
+  },
+  EXAMPLE_MEMBERSHIP: {
+    verifierUrl: 'http://localhost:7048/v/0.1.0.1501/t/1790000000.org-proof.TokOrg_2',
+    proxyUrl: 'ws://localhost:7048/v/0.1.0.1501/t/1790000000.org-proof.TokOrg_2/proxy?token=',
+  },
+};
+export const METHOD_PARAMS = {
+  prWork: { proofId: 'pr-proof' },
+  membership: { proofId: 'org-proof' },
+};
+
 export const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
 export function builtIn(template = TEMPLATE, id = 'example-work'): BuiltInPlugin {

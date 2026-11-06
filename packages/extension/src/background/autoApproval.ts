@@ -10,7 +10,8 @@
  *      packaged versions (else UNKNOWN_PLUGIN / PLUGIN_VERSION_MISMATCH: the
  *      page then asks the user to update the extension);
  *   3. the values are well-formed (URLs, params JSON, the three sessionData
- *      keys the page sends; constants/builtinPlugins.ts checkRunValues).
+ *      keys the page sends; constants/builtinPlugins.ts checkRunValues;
+ *      per-method URL pairs only for methods this plugin version has).
  * Then the run is auto-approved as "allow all data sharing this session"
  * (pressing Continue on the embedding page is the consent). Anything else is refused:
  * there is no prompt path and no page-supplied code path any more.
@@ -115,7 +116,7 @@ export function autoApprovalFor(
     const r = (request ?? {}) as Record<string, unknown>;
     const found = findBuiltInPlugin(r.pluginId, r.fingerprint, plugins);
     if ('error' in found) return { ok: false, error: found.error };
-    const values = checkRunValues(r);
+    const values = checkRunValues(r, found.plugin.layout);
     const sessionData = checkPageSessionData(r.sessionData);
     const requestId =
       r.requestId === undefined || r.requestId === null

@@ -48,6 +48,13 @@ var options = {
   module: {
     rules: [
       {
+        // No absolute build path in the bundles
+        // (utils/forkScriptNameLoader.js).
+        test: /emscripten-module\.browser\.mjs$/,
+        include: /@jitl[\\/]quickjs-ng-wasmfile-release-sync/,
+        use: path.resolve(__dirname, 'utils', 'forkScriptNameLoader.js'),
+      },
+      {
         // Ignore .d.ts files from node_modules to prevent webpack parse errors
         test: /\.d\.ts$/,
         include: /node_modules/,

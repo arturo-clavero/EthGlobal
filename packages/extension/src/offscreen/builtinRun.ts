@@ -16,6 +16,7 @@ import {
   sha256Hex,
   substitutePlugin,
   type BuiltInPlugin,
+  type RunValues,
 } from '../constants/builtinPlugins';
 
 /** The parts of a runtime.MessageSender the check reads. */
@@ -29,7 +30,7 @@ export interface BuiltInRunMessage {
   type: 'RUN_BUILTIN_OFFSCREEN';
   pluginId: string;
   fingerprint: string;
-  values: { verifierUrl: string; proxyUrl: string; params: string };
+  values: RunValues;
   requestId?: string | null;
   sessionData: Record<string, string>;
 }

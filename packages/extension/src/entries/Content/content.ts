@@ -55,6 +55,13 @@ interface RunBuiltInOptions {
   proxyUrl: string;
   /** JSON text of the plugin params object. */
   params: string;
+  /**
+   * One verifier/proxy URL pair per method (proof) in this window,
+   * e.g. {EXAMPLE_WORK: {verifierUrl, proxyUrl}, EXAMPLE_MEMBERSHIP: {…}};
+   * each proof keeps its own upgrade token. A method not named gets the
+   * run's pair above.
+   */
+  methodUrls?: Record<string, { verifierUrl: string; proxyUrl: string }>;
   requestId?: string;
   sessionData?: Record<string, string>;
 }
@@ -105,6 +112,7 @@ class ExtensionAPI {
             verifierUrl: options.verifierUrl,
             proxyUrl: options.proxyUrl,
             params: options.params,
+            methodUrls: options.methodUrls,
             requestId,
             sessionData: options.sessionData,
           },

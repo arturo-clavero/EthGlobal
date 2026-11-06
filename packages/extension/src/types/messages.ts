@@ -48,6 +48,8 @@ export type BackgroundMessage =
       verifierUrl: unknown;
       proxyUrl: unknown;
       params: unknown;
+      // {<METHOD>: {verifierUrl, proxyUrl}}, one pair per proof in the window.
+      methodUrls: unknown;
       requestId: unknown;
       sessionData: unknown;
     }
@@ -91,7 +93,12 @@ export type OffscreenMessage =
       type: 'RUN_BUILTIN_OFFSCREEN';
       pluginId: string;
       fingerprint: string;
-      values: { verifierUrl: string; proxyUrl: string; params: string };
+      values: {
+        verifierUrl: string;
+        proxyUrl: string;
+        params: string;
+        methodUrls?: Record<string, { verifierUrl: string; proxyUrl: string }>;
+      };
       requestId: string | null;
       sessionData: Record<string, string>;
     }

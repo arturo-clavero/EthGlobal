@@ -10,6 +10,7 @@ import path from 'node:path';
 import { prepareBuiltInRun } from '../../src/offscreen/builtinRun';
 import { builtInPluginPath, pluginLayout } from '../../src/constants/builtinPlugins';
 import { builtIn, EXT_ID, PARAMS, PLUGIN, PLUGINS, TEMPLATE } from '../helpers/builtinRunFixture';
+import { METHOD_PARAMS, METHOD_URLS, TEMPLATE_METHODS } from '../helpers/builtinRunFixture';
 
 const BG_URL = 'chrome-extension://test-id/background.bundle.js';
 const BACKGROUND = { id: EXT_ID, url: BG_URL };
@@ -136,6 +137,43 @@ describe('prepareBuiltInRun', () => {
     expect('code' in out && out.code).toContain('action: "REVEAL " }');
     expect(d.read).toEqual([builtInPluginPath(previous)]);
   });
+
+  it('one run, a URL pair per method; each method gets its own token URLs', async () => {
+    const two = builtIn(TEMPLATE_METHODS);
+    const d = deps({ [builtInPluginPath(two)]: TEMPLATE_METHODS });
+    const msg = {
+      ...MSG,
+      fingerprint: two.sha256,
+      values: { ...VALUES, params: JSON.stringify(METHOD_PARAMS), methodUrls: METHOD_URLS },
+    };
+    const out = await prepareBuiltInRun(msg, BACKGROUND, { ...d.deps, plugins: [two] });
+    if (!('code' in out)) throw new Error(out.error);
+    const pr = out.code.indexOf('await prove({ url: "https://github.com/search"');
+    const org = out.code.indexOf('await prove({ url: "https://github.com/orgs/acme/people"');
+    expect(pr).toBeGreaterThan(0);
+    expect(org).toBeGreaterThan(pr);
+    const prCall = out.code.slice(pr, org);
+    const orgCall = out.code.slice(org);
+    expect(prCall).toContain(`verifierUrl: "${METHOD_URLS.EXAMPLE_WORK.verifierUrl}"`);
+    expect(prCall).toContain(`proxyUrl: "${METHOD_URLS.EXAMPLE_WORK.proxyUrl}" + HOST`);
+    expect(orgCall).toContain(`verifierUrl: "${METHOD_URLS.EXAMPLE_MEMBERSHIP.verifierUrl}"`);
+    expect(orgCall).toContain(`proxyUrl: "${METHOD_URLS.EXAMPLE_MEMBERSHIP.proxyUrl}" + HOST`);
+    expect(prCall).not.toContain('TokOrg_2');
+    expect(orgCall).not.toContain('TokPr_1');
+    expect(out.code).not.toContain('localhost:7048"');
+    // A method this version lacks, or a bad per-method URL: nothing runs.
+    for (const methodUrls of [
+      { ...METHOD_URLS, EXAMPLE_OTHER: METHOD_URLS.EXAMPLE_WORK },
+      { EXAMPLE_WORK: { ...METHOD_URLS.EXAMPLE_WORK, proxyUrl: 'ws://x" + evil() + "' } },
+    ]) {
+      expect(
+        await prepareBuiltInRun({ ...msg, values: { ...msg.values, methodUrls } }, BACKGROUND, {
+          ...d.deps,
+          plugins: [two],
+        }),
+      ).toEqual({ error: 'BAD_VALUES' });
+    }
+  });
 });
 
 describe('no code path accepts page-supplied code', () => {
@@ -178,7 +216,7 @@ describe('no code path accepts page-supplied code', () => {
     const content = src('entries/Content/index.ts');
     const forward = /type: 'RUN_BUILTIN',([\s\S]*?)\}\)/.exec(content)![1];
     expect(forward.replace(/\s+/g, ' ').trim()).toBe(
-      'pluginId: p.pluginId, fingerprint: p.fingerprint, verifierUrl: p.verifierUrl, proxyUrl: p.proxyUrl, params: p.params, requestId: p.requestId, sessionData: p.sessionData,',
+      'pluginId: p.pluginId, fingerprint: p.fingerprint, verifierUrl: p.verifierUrl, proxyUrl: p.proxyUrl, params: p.params, methodUrls: p.methodUrls, requestId: p.requestId, sessionData: p.sessionData,',
     );
     const page = src('entries/Content/content.ts');
     expect(page).not.toMatch(/\bcode\b\s*[,:]/);

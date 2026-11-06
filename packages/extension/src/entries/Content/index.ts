@@ -350,6 +350,7 @@ window.addEventListener('message', (event) => {
         verifierUrl: p.verifierUrl,
         proxyUrl: p.proxyUrl,
         params: p.params,
+        methodUrls: p.methodUrls,
         requestId: p.requestId,
         sessionData: p.sessionData,
       })
