@@ -1,3 +1,4 @@
+import { AWS_ACTIVITY_PROFILES } from './activity-policy.mjs';
 import { authenticatedAwsTranscript } from './authenticated-transcript.mjs';
 import { inspectAwsIdentitySession } from './identity-structure.mjs';
 import { inspectAwsEventSession } from './event-structure.mjs';
@@ -33,9 +34,9 @@ export { fields as awsProofFields };
 /** Wire preflight only; native delivery, ownership and replay gates remain caller duties. */
 export function validateAwsBundleShape(bundle) {
   if (!exact(bundle, ['kind', 'version', 'sessionIds', 'proofs']) || bundle.kind !== 'AWS_PRIVATE_RESULT' || bundle.version !== 1 ||
-      !Array.isArray(bundle.sessionIds) || bundle.sessionIds.length !== 2 ||
+      !Array.isArray(bundle.sessionIds) || (bundle.sessionIds.length < 2 || bundle.sessionIds.length > 4) ||
       Array.from(bundle.sessionIds).some(id => typeof id !== 'string' || !UUID.test(id)) ||
-      new Set(bundle.sessionIds.map(id => id.toLowerCase())).size !== 2 ||
+      new Set(bundle.sessionIds.map(id => id.toLowerCase())).size !== bundle.sessionIds.length ||
       !Array.isArray(bundle.proofs) || bundle.proofs.length < 2 || bundle.proofs.length > 128) fail();
   let size = JSON.stringify({ kind: bundle.kind, version: bundle.version, sessionIds: bundle.sessionIds, proofs: [] }).length;
   for (const proof of bundle.proofs) {
@@ -59,12 +60,12 @@ function relation(circuitId, slots, extra = []) {
 
 /** Shared with the local planner: every field comes from authenticated structure. */
 export function assembleAwsBundleExpectations(identity, event, cutoffMs) {
-  const i = identity.bindings, e = event.bindings;
-  const result = [
+  const i = identity.bindings, events = Array.isArray(event) ? event : [event];
+  const result = events.flatMap(({ bindings: e }) => [
     relation('aws-identity-link-v1', [i.UserId, i.Arn, i.Path, i.UserName, e.actorId, e.actorArn, e.actorAccount, e.recipientAccount]),
     relation('aws-event-link-v1', [e.requestEventId, e.outerEventId, e.eventId, e.outerTime, e.eventTime, e.roleName], [cutoffMs]),
-  ];
-  const obligations = [...identity.obligations, ...event.obligations], batched = new Set();
+  ]);
+  const obligations = [...identity.obligations, ...events.flatMap(event => event.obligations)], batched = new Set();
   // Identity-link authenticates these exact raw spans and proves stricter XML-safe grammars.
   const identityText = new Set([i.UserId.hash, i.Arn.hash, i.Path.hash, i.UserName.hash]);
   for (const [single, circuitId, count] of BATCHES) {
@@ -101,9 +102,9 @@ export function assembleAwsBundleExpectations(identity, event, cutoffMs) {
 export async function verifyAwsBundle({ sessions, bundle, runtime, now = Date.now() }) {
   try {
     validateAwsBundleShape(bundle);
-    if (!Array.isArray(sessions) || sessions.length !== 2 || typeof runtime?.verify !== 'function') fail();
+    if (!Array.isArray(sessions) || sessions.length !== bundle.sessionIds.length || typeof runtime?.verify !== 'function') fail();
     const first = sessions[0]?.expected, native = new Map();
-    for (const [index, step] of ['identity', 'E0'].entries()) {
+    for (const [index, step] of ['identity', 'E0', 'E1', 'E2'].slice(0, sessions.length).entries()) {
       const session = sessions[index], expected = session?.expected;
       if (!expected || expected.step !== step || expected.sessionId !== bundle.sessionIds[index]) fail();
       for (const name of ['proofId', 'nonceMac', 'pluginSha256', 'issuedAt', 'expiresAt', 'identityService', 'region']) {
@@ -117,7 +118,7 @@ export async function verifyAwsBundle({ sessions, bundle, runtime, now = Date.no
         }
       }
     }
-    const claims = [], claimed = new Set();
+    const claims = Array.from({ length: sessions.length }, () => []), claimed = new Set();
     for (const entry of bundle.proofs) {
       const values = fields(entry);
       if (!['atom-v1', 'aws-escaped-atom-v1', 'atoms-small-v1', 'aws-escaped-atoms-small-v1', 'aws-escaped-atom-small-v1'].includes(entry.circuitId)) continue;
@@ -133,18 +134,19 @@ export async function verifyAwsBundle({ sessions, bundle, runtime, now = Date.no
         const hash = fieldHash(batch ? index * 32 : 0), slot = native.get(hash);
         const kind = values[batch ? (bridge ? 528 : 264) + index : bridge ? 66 : 33];
         const decodedLength = bridge ? values[batch ? 520 + index : 65] : 0n;
-        if (!slot || slot.index !== 1 || BigInt(slot.end - slot.start) !== length || claimed.has(hash) ||
+        if (!slot || slot.index < 1 || BigInt(slot.end - slot.start) !== length || claimed.has(hash) ||
             length > limit || kind < 1n || kind > 5n) fail();
         if (bridge && (decodedLength < 1n || decodedLength > limit)) fail();
         claimed.add(hash);
-        claims.push({ direction: slot.direction, start: slot.start, end: slot.end, hash,
+        claims[slot.index].push({ direction: slot.direction, start: slot.start, end: slot.end, hash,
           layer: bridge ? 'event' : 'outer', kind: Number(kind),
           ...(bridge ? { decodedHash: fieldHash(batch ? 264 + index * 32 : 33), decodedLength: Number(decodedLength) } : {}) });
       }
     }
     const identity = inspectAwsIdentitySession(sessions[0].receipt, first, now);
-    const event = inspectAwsEventSession(sessions[1].receipt, sessions[1].expected, claims, now);
-    const expected = assembleAwsBundleExpectations(identity, event, first.issuedAt);
+    const events = sessions.slice(1).map((session, index) => inspectAwsEventSession(session.receipt, session.expected, claims[index + 1], now));
+    if (new Set(events.map(event => event.activity)).size !== events.length) fail();
+    const expected = assembleAwsBundleExpectations(identity, events, first.issuedAt);
     if (expected.length !== bundle.proofs.length) fail();
     for (let index = 0; index < expected.length; index++) {
       const proof = bundle.proofs[index], target = expected[index];
@@ -152,6 +154,7 @@ export async function verifyAwsBundle({ sessions, bundle, runtime, now = Date.no
       if (proof.circuitId !== target.circuitId || actual.some((value, i) => value !== BigInt(target.publicInputs[i])) ||
           await runtime.verify(proof, target.publicInputs) !== true) fail();
     }
-    return { taskType: 'iam-role-trust-update', attribution: 'iam-user', windowDays: 90 };
+    return { activities: AWS_ACTIVITY_PROFILES.filter(profile => events.some(event => event.activity === profile.id)).map(profile => profile.id),
+      attribution: 'iam-user', windowDays: 90 };
   } catch { throw new Error('AWS_PRIVATE_BUNDLE_INVALID'); }
 }

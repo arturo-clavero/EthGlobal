@@ -1,6 +1,7 @@
 import { inspectAwsHttpSession, inspectAwsHttpDirections } from './http-session.mjs';
 import { parseJsonStructure } from '../gcp/json-structure.mjs';
 import { parseCloudTrailStructure } from './nested-json.mjs';
+import { awsActivityProfile } from './activity-policy.mjs';
 
 const fail = () => { throw new Error('AWS_PRIVATE_EVENT_INVALID'); };
 const key = slot => `${slot.direction}:${slot.start}:${slot.end}:${slot.hash}`;
@@ -32,7 +33,7 @@ export function inspectAwsEventDirections(directions, expected, atomClaims = [])
 
 function inspectEvent(http, expected, atomClaims) {
   try {
-    if (expected?.step !== 'E0' || !Array.isArray(atomClaims) || atomClaims.length > 512) fail();
+    if (!['E0', 'E1', 'E2'].includes(expected?.step) || !Array.isArray(atomClaims) || atomClaims.length > 512) fail();
     const { sent, recv, native, obligations } = http;
     const claims = new Map(), used = new Set();
     for (const claim of atomClaims) {
@@ -72,8 +73,10 @@ function inspectEvent(http, expected, atomClaims) {
       'responseElements', 'sourceIPAddress', 'userAgent', 'requestID', 'tlsDetails', 'sessionCredentialFromConsole', 'resources'],
     ['eventVersion', 'eventTime', 'eventID', 'eventName', 'eventSource', 'awsRegion', 'eventType', 'eventCategory',
       'managementEvent', 'readOnly', 'recipientAccountId', 'userIdentity', 'requestParameters', 'responseElements']);
-    const publicFields = { eventName: 'UpdateAssumeRolePolicy', eventSource: 'iam.amazonaws.com', awsRegion: 'us-east-1',
-      eventType: 'AwsApiCall', eventCategory: 'Management', managementEvent: true, readOnly: false, responseElements: null };
+    const profile = awsActivityProfile(event.get('eventSource')?.value, event.get('eventName')?.value);
+    if (!profile) fail();
+    const publicFields = { eventName: event.get('eventName').value, eventSource: profile.source, awsRegion: 'us-east-1',
+      eventType: 'AwsApiCall', eventCategory: 'Management', managementEvent: true, readOnly: false };
     for (const [name, value] of Object.entries(publicFields)) if (!literal(event.get(name), value)) fail();
     if (privateNode(event.get('eventVersion')) || event.get('eventVersion')?.type !== 'string' ||
         !/^1\.[0-9]{2}$/.test(event.get('eventVersion').value) ||
@@ -96,10 +99,51 @@ function inspectEvent(http, expected, atomClaims) {
       const attributes = object(context.get('attributes'), ['creationDate', 'mfaAuthenticated']);
       for (const node of attributes.values()) innerField(node);
     }
-    const operation = object(event.get('requestParameters'), ['roleName', 'policyDocument', 'dryRun'], ['roleName', 'policyDocument']);
+    const operationKeys = profile.id === 'iam-role-trust-update' ? ['roleName', 'policyDocument'] :
+      profile.id === 'lambda-configuration-update' ? ['functionName', 'description', 'timeout', 'memorySize', 'handler', 'runtime', 'role', 'revisionId'] :
+      ['groupId', 'ipPermissions'];
+    const operation = object(event.get('requestParameters'), [...operationKeys, 'dryRun'],
+      profile.id === 'lambda-configuration-update' ? ['functionName'] : operationKeys);
     if (operation.has('dryRun') && !literal(operation.get('dryRun'), false)) fail();
-    const roleName = innerField(operation.get('roleName')), policy = innerField(operation.get('policyDocument'));
-    if (roleName.end - roleName.start < 3 || roleName.end - roleName.start > 66 || policy.end - policy.start < 3) fail();
+    // Reuse the pinned name circuit's bounded ASCII grammar for these resource names.
+    // This is deliberately narrower than all Lambda resource ARN forms.
+    const roleName = innerField(operation.get(profile.resource));
+    if (roleName.end - roleName.start < 3 || roleName.end - roleName.start > 66) fail();
+    if (profile.id === 'iam-role-trust-update') {
+      const policy = innerField(operation.get('policyDocument'));
+      if (policy.end - policy.start < 3 || !literal(event.get('responseElements'), null)) fail();
+    } else if (profile.id === 'lambda-configuration-update') {
+      if (![...operation.keys()].some(name => !['functionName', 'dryRun', 'revisionId'].includes(name)) ||
+          !literal(event.get('responseElements'), null)) fail();
+      for (const [name, node] of operation) if (!['functionName', 'dryRun'].includes(name)) {
+        innerField(node, ['timeout', 'memorySize'].includes(name) ? 2 : 1);
+      }
+    } else {
+      const items = (node, allowed, required = []) => {
+        const list = object(node, ['items'], ['items']).get('items');
+        if (list?.type !== 'array') fail();
+        return list.items.map(item => object(item, allowed, required));
+      };
+      const permissions = items(operation.get('ipPermissions'), ['ipProtocol', 'fromPort', 'toPort', 'ipRanges', 'ipv6Ranges', 'groups', 'prefixListIds'], ['ipProtocol']);
+      if (!permissions.length) fail();
+      for (const permission of permissions) {
+        innerField(permission.get('ipProtocol'));
+        for (const name of ['fromPort', 'toPort']) if (permission.has(name)) innerField(permission.get(name), 2);
+        for (const [name, allowed] of [['ipRanges', ['cidrIp', 'description']], ['ipv6Ranges', ['cidrIpv6', 'description']],
+          ['groups', ['groupId', 'userId', 'vpcId', 'vpcPeeringConnectionId', 'description']], ['prefixListIds', ['prefixListId', 'description']]]) {
+          if (permission.has(name)) for (const entry of items(permission.get(name), allowed)) {
+            for (const node of entry.values()) innerField(node);
+          }
+        }
+      }
+      const result = object(event.get('responseElements'), ['requestId', '_return', 'securityGroupRuleSet'], ['_return']);
+      if (!literal(result.get('_return'), true)) fail();
+      if (result.has('requestId')) innerField(result.get('requestId'));
+      if (result.has('securityGroupRuleSet')) for (const entry of items(result.get('securityGroupRuleSet'),
+        ['securityGroupRuleId', 'groupId', 'groupOwnerId', 'isEgress', 'ipProtocol', 'fromPort', 'toPort', 'cidrIpv4', 'cidrIpv6', 'description', 'prefixListId'])) {
+        for (const [name, node] of entry) innerField(node, ['fromPort', 'toPort'].includes(name) ? 2 : name === 'isEgress' ? 4 : 1);
+      }
+    }
     for (const name of ['sourceIPAddress', 'userAgent', 'requestID', 'sessionCredentialFromConsole']) {
       if (event.has(name)) innerField(event.get(name));
     }
@@ -115,7 +159,7 @@ function inspectEvent(http, expected, atomClaims) {
       for (const resource of node.items) for (const value of object(resource, names).values()) field(value, slots);
     }
     if (used.size !== claims.size || obligations.length !== native.size || new Set(obligations.map(key)).size !== native.size) fail();
-    return { obligations, bindings: {
+    return { activity: profile.id, obligations, bindings: {
       requestEventId: field(attribute.get('AttributeValue'), request.slots), outerEventId: field(row.get('EventId'), outerAtoms),
       eventId: innerField(event.get('eventID')), outerTime: field(row.get('EventTime'), outerAtoms, 2), eventTime: innerField(event.get('eventTime')),
       recipientAccount: innerField(event.get('recipientAccountId')), actorAccount: innerField(actor.get('accountId')),

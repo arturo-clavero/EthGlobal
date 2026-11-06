@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { inspectAwsEventSession } from './event-structure.mjs';
-import { eventFixture, fixtureNow } from './event-fixture.mjs';
+import { eventFixture, activityEventFixture, fixtureNow } from './event-fixture.mjs';
 
 const inspect = fixture => inspectAwsEventSession(fixture.receipt, fixture.expected, fixture.claims, fixtureNow);
 const rejects = fixture => assert.throws(() => inspect(fixture), { message: 'AWS_PRIVATE_EVENT_INVALID' });
@@ -96,4 +96,36 @@ test('keeps wrong private actor/account values provisional until equality proofs
   const result = inspect(eventFixture({ mutateEvent: event => { event.userIdentity.accountId = '999988887777'; } }));
   assert.notEqual(result.bindings.actorAccount.hash, result.bindings.recipientAccount.hash);
   assert.equal(result.accepted, undefined);
+});
+
+test('additional activity predicates keep all private fields behind proof obligations', () => {
+  for (const [activity, id] of [['lambda', 'lambda-configuration-update'], ['network', 'security-group-ingress']]) {
+    const fixture = activityEventFixture(activity), result = inspect(fixture);
+    assert.equal(result.activity, id);
+    assert.equal(result.obligations.length, fixture.receipt.results.filter(row => row.action.kind === 'HASH').length);
+    for (const sentinel of ['AWS_PRIVATE', 'sg-0123456789abcdef0', '192.0.2.0/24', '111122223333']) {
+      assert.ok(!JSON.stringify(fixture.receipt).includes(sentinel));
+      assert.ok(!JSON.stringify(result).includes(sentinel));
+    }
+  }
+});
+
+test('additional families reject failures, other actors, unknown fields and leaked configuration', () => {
+  for (const activity of ['lambda', 'network']) for (const mutate of [
+    event => { event.errorCode = 'AccessDenied'; }, event => { event.errorMessage = 'failed'; },
+    event => { event.requestParameters.dryRun = true; }, event => { event.userIdentity.type = 'AssumedRole'; },
+    event => { event.requestParameters.unreviewedField = 'private'; }, event => { event.readOnly = true; },
+    event => { event.eventSource = 'iam.amazonaws.com'; },
+  ]) rejects(activityEventFixture(activity, { mutateEvent: mutate }));
+  rejects(activityEventFixture('network', { mutateEvent: event => { event.responseElements._return = false; } }));
+  rejects(activityEventFixture('network', { mutateEvent: event => { event.requestParameters.ipPermissions.items = []; } }));
+  rejects(activityEventFixture('lambda', { mutateEvent: event => { delete event.requestParameters.timeout; } }));
+  rejects(activityEventFixture('lambda', { mutateEvent: event => { event.requestParameters.environment = { SECRET: 'private' }; } }));
+  for (const path of ['requestParameters.functionName', 'requestParameters.timeout']) {
+    rejects(activityEventFixture('lambda', { publicEvent: [path] }));
+  }
+  for (const path of ['requestParameters.groupId', 'requestParameters.ipPermissions.items.0.ipRanges.items.0.cidrIp',
+    'responseElements.securityGroupRuleSet.items.0.cidrIpv4']) {
+    rejects(activityEventFixture('network', { publicEvent: [path] }));
+  }
 });

@@ -227,7 +227,7 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
     return readConsoleCredentials(msg, sender, { extensionId: browser.runtime.id,
       backgroundUrl: browser.runtime.getURL('background.bundle.js'), origin: window.location.origin, top: window.top === window });
   }
-  const completion = msg as { type?: string; requestId?: unknown; success?: unknown; result?: unknown };
+  const completion = msg as { type?: string; requestId?: unknown; success?: unknown; result?: unknown; error?: unknown };
   if (completion?.type === 'RUN_BUILTIN_COMPLETE') {
     if (!PRODUCT_PAGE || sender.id !== browser.runtime.id || sender.tab !== undefined ||
         (sender.url && sender.url !== browser.runtime.getURL('background.bundle.js')) ||
@@ -236,7 +236,8 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
     if (!pending) return;
     window.postMessage({ type: 'TLSN_RUN_BUILTIN_RESPONSE', requestId: completion.requestId,
       ...(completion.success === true ? { success: true, result: completion.result } :
-        { success: false, error: pending.error }) }, window.location.origin);
+        { success: false, error: pending.error === 'AWS_PRIVATE_PROVING_FAILED' && completion.error === 'AWS_ACTIVITY_ACCESS_REQUIRED'
+          ? 'AWS_ACTIVITY_ACCESS_REQUIRED' : pending.error }) }, window.location.origin);
     return;
   }
   const request = msg as ContentMessage;

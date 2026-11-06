@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { awsPrivateCredentials, signAwsPrivateRequest, readAwsPrivateResponse, createAwsLocalSession } from './browser-session.mjs';
 import { identityFixture } from './identity-fixture.mjs';
-import { eventFixture, syntheticWitness } from './event-fixture.mjs';
+import { eventFixture, activityEventFixture, syntheticWitness } from './event-fixture.mjs';
+import { AWS_ACTIVITY_PROFILES } from './activity-policy.mjs';
 
 const now = Date.UTC(2026, 9, 29, 8, 0, 0);
 const credentials = () => ({ accessKeyId: 'ASIA' + 'A'.repeat(16), secretAccessKey: 's'.repeat(40),
@@ -59,6 +60,37 @@ test('response reader bounds bytes, erases owned chunks and returns only fixed f
   await failed(readAwsPrivateResponse('https://iam.amazonaws.com/', {}, { fetchAws: async () => { throw new Error('PRIVATE_ERROR_SENTINEL'); } }));
 });
 
+test('only a bounded CloudTrail access denial emits the fixed permission diagnostic', async () => {
+  const url = 'https://cloudtrail.us-east-1.amazonaws.com/';
+  const options = { headers: { 'x-amz-target': 'com.amazonaws.cloudtrail.v20131101.CloudTrail_20131101.LookupEvents' } };
+  const denied = JSON.stringify({ __type: 'AccessDeniedException', message: 'PRIVATE_ARN_SENTINEL' });
+  for (const status of [400, 403]) {
+    const chunk = new TextEncoder().encode(denied);
+    await assert.rejects(readAwsPrivateResponse(url, options, { fetchAws: async () => new Response(
+      new ReadableStream({ start(controller) { controller.enqueue(chunk); controller.close(); } }), { status }),
+    }), { message: 'AWS_ACTIVITY_ACCESS_REQUIRED' });
+    assert.ok(chunk.every(value => value === 0));
+  }
+  for (const [target, request, status, body] of [
+    ['https://iam.amazonaws.com/', options, 403, denied],
+    [url, {}, 403, denied], [url, options, 500, denied],
+    [url, options, 403, JSON.stringify({ __type: 'ExpiredTokenException', message: 'PRIVATE_ARN_SENTINEL' })],
+    [url, options, 403, '{"__type":"AccessDeniedException","__type":"AccessDeniedException"}'],
+    [url, options, 403, JSON.stringify({ __type: 'AccessDeniedException', message: 'X'.repeat(16384) })],
+  ]) await failed(readAwsPrivateResponse(target, request, { fetchAws: async () => new Response(body, { status }) }));
+  await failed(readAwsPrivateResponse(url, options, { fetchAws: async () => { throw new Error('AWS_ACTIVITY_ACCESS_REQUIRED'); } }));
+});
+
+test('discovery preserves only the fixed permission diagnostic and consumes the denied attempt', async () => {
+  let calls = 0;
+  const local = collector(async () => ++calls === 1 ? new Response(identity()) : new Response(
+    JSON.stringify({ __type: 'AccessDeniedException', message: 'PRIVATE_ARN_SENTINEL' }), { status: 400 }));
+  await assert.rejects(local.prepare(capture()), { message: 'AWS_ACTIVITY_ACCESS_REQUIRED' });
+  assert.equal(calls, 2);
+  await failed(local.prepare(capture()));
+  assert.equal(calls, 2);
+});
+
 test('local discovery emits only two signed native requests and consumes its session once', async () => {
   const calls = [];
   const local = collector(async (url, options) => {
@@ -75,7 +107,7 @@ test('local discovery emits only two signed native requests and consumes its ses
   assert.equal(query.MaxResults, 1);
   assert.deepEqual(query.LookupAttributes, [{ AttributeKey: 'EventName', AttributeValue: 'UpdateAssumeRolePolicy' }]);
   assert.doesNotMatch(JSON.stringify(requests), /AWS_PRIVATE_\w+_SENTINEL|AIDAEXAMPLESYNTHETIC01|111122223333|secretAccessKey|expiration/);
-  await failed(local.prepare(capture())); assert.equal(calls.length, 2);
+  await failed(local.prepare(capture())); assert.equal(calls.length, 4);
 });
 
 test('wrong account, wrong actor, denied events and dry runs never select evidence', async () => {
@@ -83,11 +115,84 @@ test('wrong account, wrong actor, denied events and dry runs never select eviden
     e => { e.errorCode = 'PRIVATE_ERROR_SENTINEL'; }, e => { e.requestParameters.dryRun = true; }]) {
     let calls = 0;
     const local = collector(async () => new Response(++calls === 1 ? identity() : event({ mutateEvent })));
-    await failed(local.prepare(capture())); assert.equal(calls, 2);
+    await failed(local.prepare(capture())); assert.equal(calls, 4);
   }
   let calls = 0;
   const local = collector(async () => { calls++; return new Response(identity()); });
   await failed(local.prepare({ ...capture(), accountId: '999999999999' })); assert.equal(calls, 1);
+});
+
+test('grouped discovery stops reading after selecting two independently attributed families', async () => {
+  const fixtures = [eventFixture({ eventId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa0' }),
+    activityEventFixture('lambda', { eventId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1' }),
+    activityEventFixture('network', { eventId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2' })];
+  const queries = [];
+  const local = collector(async (url, options) => {
+    if (url === 'https://iam.amazonaws.com/') return new Response(identity());
+    const query = JSON.parse(options.body);
+    queries.push(query);
+    const index = AWS_ACTIVITY_PROFILES.findIndex(profile => profile.operations[0] === query.LookupAttributes[0].AttributeValue);
+    assert.notEqual(index, -1);
+    return new Response(body(fixtures[index]));
+  });
+  const requests = await local.prepare(capture());
+  assert.equal(requests.length, 3);
+  assert.deepEqual(queries.map(query => query.LookupAttributes[0].AttributeValue), AWS_ACTIVITY_PROFILES.slice(0, 2).map(profile => profile.operations[0]));
+  assert.deepEqual(requests.slice(1).map(request => JSON.parse(request.body).LookupAttributes), fixtures.slice(0, 2).map(fixture =>
+    [{ AttributeKey: 'EventId', AttributeValue: JSON.parse(body(fixture)).Events[0].EventId }]));
+  assert.doesNotMatch(JSON.stringify(requests), /AWS_PRIVATE_\w+_SENTINEL|111122223333|sg-0123456789abcdef0|192\.0\.2\.0/);
+});
+
+test('the third supported family remains selectable when either earlier family has no matching sample', async () => {
+  const fixtures = [eventFixture({ eventId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa0' }),
+    activityEventFixture('lambda', { eventId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1' }),
+    activityEventFixture('network', { eventId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2' })];
+  for (const missing of [0, 1]) {
+    const queries = [];
+    const local = collector(async (url, options) => {
+      if (url === 'https://iam.amazonaws.com/') return new Response(identity());
+      const query = JSON.parse(options.body); queries.push(query);
+      const index = AWS_ACTIVITY_PROFILES.findIndex(profile => profile.operations[0] === query.LookupAttributes[0].AttributeValue);
+      assert.notEqual(index, -1);
+      return new Response(index === missing ? '{"Events":[]}' : body(fixtures[index]));
+    });
+    const requests = await local.prepare(capture());
+    assert.equal(queries.length, 3);
+    assert.equal(requests.length, 3);
+    assert.deepEqual(requests.slice(1).map(request => JSON.parse(request.body).LookupAttributes),
+      fixtures.filter((_, index) => index !== missing).map(fixture =>
+        [{ AttributeKey: 'EventId', AttributeValue: JSON.parse(body(fixture)).Events[0].EventId }]));
+  }
+});
+
+test('grouped discovery skips failed and differently attributed pages without claiming unavailable groups', async () => {
+  const successful = activityEventFixture('network'), denied = activityEventFixture('network', {
+    mutateEvent: event => { event.errorCode = 'AccessDenied'; } });
+  const queries = [];
+  const local = collector(async (url, options) => {
+    if (url === 'https://iam.amazonaws.com/') return new Response(identity());
+    const query = JSON.parse(options.body); queries.push(query);
+    if (query.LookupAttributes[0].AttributeValue === 'UpdateFunctionConfiguration20150331v2') return new Response(body(
+      activityEventFixture('lambda', { mutateEvent: event => { event.userIdentity.principalId = 'OTHER'; } })));
+    if (query.LookupAttributes[0].AttributeValue !== 'AuthorizeSecurityGroupIngress') return new Response('{"Events":[]}');
+    if (!query.NextToken) return new Response(JSON.stringify({ ...JSON.parse(body(denied)), NextToken: 'second-page' }));
+    assert.equal(query.NextToken, 'second-page');
+    return new Response(body(successful));
+  });
+  const requests = await local.prepare(capture());
+  assert.equal(queries.length, 4);
+  assert.equal(requests.length, 2);
+  assert.deepEqual(JSON.parse(requests[1].body).LookupAttributes,
+    [{ AttributeKey: 'EventId', AttributeValue: JSON.parse(body(successful)).Events[0].EventId }]);
+});
+
+test('discovery signer accepts only the supported activity operations', async () => {
+  const query = { kind: 'discovery', start: now / 1000 - 90 * 86400, end: now / 1000 };
+  for (const profile of AWS_ACTIVITY_PROFILES) {
+    const request = await signAwsPrivateRequest({ ...query, eventName: profile.operations[0] }, credentials(), { nonceMac: 'n'.repeat(43), now });
+    assert.deepEqual(JSON.parse(request.body).LookupAttributes, [{ AttributeKey: 'EventName', AttributeValue: profile.operations[0] }]);
+  }
+  await failed(signAwsPrivateRequest({ ...query, eventName: 'DeleteUser' }, credentials(), { nonceMac: 'n'.repeat(43), now }));
 });
 
 test('duplicate keys and looping pagination reject without a completed selection', async () => {

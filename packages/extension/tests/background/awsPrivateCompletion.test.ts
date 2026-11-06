@@ -51,3 +51,17 @@ it('consumes malformed completions and emits only a fixed failure code', () => {
     expect(map.size).toBe(0);
   }
 });
+
+
+it('passes only the closed AWS permission failure and never extends it to GCP or forged senders', () => {
+  const denied = { type: 'AWS_PRIVATE_COMPLETE', requestId: 'run-1', success: false, error: 'AWS_ACTIVITY_ACCESS_REQUIRED' };
+  expect(takePrivateCompletion(denied, sender, routes(), deps, 'aws')?.response).toEqual({ success: false, error: 'AWS_ACTIVITY_ACCESS_REQUIRED' });
+  for (const raw of [{ ...denied, rawWitness: 'PRIVATE_ARN_SENTINEL' }, { ...denied, error: 'AWS_ACTIVITY_ACCESS_REQUIRED: PRIVATE_ARN_SENTINEL' }, { ...denied, success: true }]) {
+    expect(takePrivateCompletion(raw, sender, routes(), deps, 'aws')?.response).toEqual({ success: false, error: 'AWS_PRIVATE_PROVING_FAILED' });
+  }
+  const map = routes();
+  expect(takePrivateCompletion(denied, { ...sender, url: offscreenUrl + '?forged' }, map, deps, 'aws')).toBeNull();
+  expect(map.size).toBe(1);
+  const gcp = new Map<string, GcpPrivateRoute>([['run-1', { tabId: 8, createdAt: 100, pageProgress: true, gcpPrivate: true }]]);
+  expect(takePrivateCompletion({ ...denied, type: 'GCP_PRIVATE_COMPLETE' }, sender, gcp, deps)?.response).toEqual({ success: false, error: 'GCP_PRIVATE_PROVING_FAILED' });
+});

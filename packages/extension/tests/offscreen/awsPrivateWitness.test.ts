@@ -1,6 +1,7 @@
 import { createHash, webcrypto } from 'node:crypto';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { AwsPrivateWitnessRun, AWS_PRIVATE_TIMEOUT_MS } from '../../src/offscreen/awsPrivateWitness';
+import * as awsClient from '../../src/aws-private/browser-client.mjs';
 import type { AwsPrivateModule } from '../../src/aws-private/browser-client.mjs';
 import type { GcpPrivateWitness } from '../../src/offscreen/gcpPrivateWitness';
 
@@ -22,7 +23,7 @@ const runs: AwsPrivateWitnessRun[] = [];
 const create = (local = module(), context = attempt()) => {
   const run = new AwsPrivateWitnessRun(runData, proofId, context, local); runs.push(run); return run;
 };
-const session = (index: number) => ({ ...runData, nonceMac: 'b'.repeat(43), step: index === 0 ? 'identity' : 'E0' });
+const session = (index: number) => ({ ...runData, nonceMac: 'b'.repeat(43), step: index === 0 ? 'identity' : `E${index - 1}` });
 const host = (index: number) => index === 0 ? 'iam.amazonaws.com' : 'cloudtrail.us-east-1.amazonaws.com';
 async function prepare(run: AwsPrivateWitnessRun, index = 0, id = ids[index]) {
   run.begin(session(index), host(index), false);
@@ -33,7 +34,7 @@ async function prepare(run: AwsPrivateWitnessRun, index = 0, id = ids[index]) {
   return { openings, response, accept: () => run.accept(id, host(index), bytes(), bytes(), openings, response) };
 }
 beforeEach(() => { vi.stubGlobal('crypto', webcrypto); });
-afterEach(() => { for (const run of runs.splice(0)) run.clear(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+afterEach(() => { for (const run of runs.splice(0)) run.clear(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 it('never collects after cancellation and erases a late credential response without fetching AWS', async () => {
   const run = create(), capture = vi.fn(); run.clear();
@@ -127,4 +128,53 @@ it('cancellation settles a hung module and erases its witness copies', async () 
   const run = create(local); await (await prepare(run)).accept(); await (await prepare(run, 1)).accept();
   const pending = expect(run.finish()).rejects.toThrow(); run.clear(); await pending;
   expect(signal.aborted).toBe(true); expect(held.every(b => b.every(n => n === 0))).toBe(true);
+});
+
+
+it('uses the locally discovered group count and rejects truncated results', async () => {
+  const allIds = [...ids, '44444444-4444-4444-8444-444444444444', '55555555-5555-4555-8555-555555555555'];
+  for (const count of [2, 3, 4]) {
+    const prepareCollection = vi.fn().mockResolvedValue(Array.from({ length: count }, () => ({})));
+    vi.spyOn(awsClient, 'createAwsLocalSession').mockReturnValue({ prepare: prepareCollection, clear: vi.fn() } as never);
+    for (const truncated of [false, ...(count > 2 ? [true] : [])]) {
+      const result = { ...bundle(), sessionIds: allIds.slice(0, truncated ? count - 1 : count) };
+      const local = module(); local.prove = vi.fn().mockResolvedValue(result);
+      const run = create(local), credentials = { secretAccessKey: 'PRIVATE_SENTINEL' };
+      expect(await run.collect(async () => ({ credentials }) as never)).toHaveLength(count);
+      expect(credentials.secretAccessKey).toBe('');
+      for (let index = 0; index < count; index++) await (await prepare(run, index, allIds[index])).accept();
+      if (truncated) await expect(run.finish()).rejects.toThrow();
+      else expect(await run.finish()).toEqual(result);
+      expect(local.clear).toHaveBeenCalledOnce();
+    }
+    vi.restoreAllMocks();
+  }
+});
+
+it('rejects an invalid discovered count and erases captured credentials', async () => {
+  for (const count of [0, 1, 5]) {
+    vi.spyOn(awsClient, 'createAwsLocalSession').mockReturnValue({
+      prepare: vi.fn().mockResolvedValue(Array(count).fill({})), clear: vi.fn(),
+    } as never);
+    const run = create(), credentials = { secretAccessKey: 'PRIVATE_SENTINEL' };
+    await expect(run.collect(async () => ({ credentials }) as never)).rejects.toThrow('AWS_PRIVATE_COLLECTION_FAILED');
+    expect(credentials.secretAccessKey).toBe('');
+    vi.restoreAllMocks();
+  }
+});
+
+
+it('retains only a fixed collection-permission flag while erasing captured credentials', async () => {
+  for (const failure of [new Error('AWS_ACTIVITY_ACCESS_REQUIRED'), new Error('PRIVATE_ARN_SENTINEL'), { message: 'AWS_ACTIVITY_ACCESS_REQUIRED' }]) {
+    const clear = vi.fn();
+    vi.spyOn(awsClient, 'createAwsLocalSession').mockReturnValue({ prepare: vi.fn().mockRejectedValue(failure), clear } as never);
+    const run = create(), credentials = { secretAccessKey: 'PRIVATE_CREDENTIAL_SENTINEL' };
+    const denied = failure instanceof Error && failure.message === 'AWS_ACTIVITY_ACCESS_REQUIRED';
+    await expect(run.collect(async () => ({ credentials }) as never)).rejects.toThrow(denied ? 'AWS_ACTIVITY_ACCESS_REQUIRED' : 'AWS_PRIVATE_COLLECTION_FAILED');
+    expect(credentials.secretAccessKey).toBe('');
+    run.clear();
+    expect(clear).toHaveBeenCalledOnce();
+    expect(run.activityAccessRequired).toBe(denied);
+    vi.restoreAllMocks();
+  }
 });

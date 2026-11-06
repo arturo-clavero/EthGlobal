@@ -28,7 +28,7 @@ export function syntheticWitness({ receipt, openings }) {
   return witness;
 }
 export function eventFixture(options = {}) {
-  const eventId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const eventId = options.eventId ?? 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   const event = { eventVersion: '1.11', eventTime: '2026-10-29T08:00:00Z', eventID: eventId,
     eventName: 'UpdateAssumeRolePolicy', eventSource: 'iam.amazonaws.com', awsRegion: 'us-east-1',
     eventType: 'AwsApiCall', eventCategory: 'Management', managementEvent: true, readOnly: false,
@@ -50,7 +50,9 @@ export function eventFixture(options = {}) {
   let sequence = 0;
   const openings = new Map();
   const digest = bytes => {
-    const preimage = Buffer.concat([bytes, Buffer.alloc(16, ++sequence)]);
+    const blinder = options.blinderSeed === undefined ? Buffer.alloc(16, ++sequence) :
+      createHash('sha256').update(`${options.blinderSeed}:${++sequence}`).digest().subarray(0, 16);
+    const preimage = Buffer.concat([bytes, blinder]);
     const hash = createHash('sha256').update(preimage).digest('hex');
     openings.set(hash, preimage);
     return hash;
@@ -69,7 +71,9 @@ export function eventFixture(options = {}) {
   const requestSlots = slots(requestBody, new Set(['LookupAttributes.0.AttributeKey', 'MaxResults']));
   const responseSlots = slots(responseBody, new Set(['Events.0.EventName', 'Events.0.EventSource', 'Events.0.ReadOnly', 'Events.0.CloudTrailEvent']));
   const publicEvent = new Set(['eventVersion', 'eventName', 'eventSource', 'awsRegion', 'eventType', 'eventCategory',
-    'managementEvent', 'readOnly', 'responseElements', 'userIdentity.type', 'requestParameters.dryRun', ...(options.publicEvent ?? [])]);
+    'managementEvent', 'readOnly', ...(event.responseElements === null ? ['responseElements'] : []),
+    ...(event.eventSource === 'ec2.amazonaws.com' ? ['responseElements._return'] : []),
+    'userIdentity.type', 'requestParameters.dryRun', ...(options.publicEvent ?? [])]);
   const eventStart = responseBody.indexOf(Buffer.from('"CloudTrailEvent":"')) + Buffer.byteLength('"CloudTrailEvent":"');
   for (const slot of slots(eventBody, publicEvent)) {
     const prefix = JSON.stringify(eventBody.subarray(0, slot.start).toString()).slice(1, -1);
@@ -144,4 +148,25 @@ export function eventFixture(options = {}) {
   const split = options.crossChunk ? responseSlots[0].start + 1 : options.chunked ? 10 : undefined;
   direction('recv', responseBody, responseSlots, responseHeaders, options.statusLine ?? 'HTTP/1.1 200 OK', split);
   return { receipt, expected: { ...fixtureExpected }, claims, openings };
+}
+
+export function activityEventFixture(activity, options = {}) {
+  return eventFixture({ ...options, mutateEvent(event) {
+    if (activity === 'lambda') {
+      event.eventName = 'UpdateFunctionConfiguration20150331v2';
+      event.eventSource = 'lambda.amazonaws.com';
+      event.requestParameters = { functionName: 'AWS_PRIVATE_FUNCTION_SENTINEL', timeout: 10 };
+    } else {
+      event.eventName = 'AuthorizeSecurityGroupIngress';
+      event.eventSource = 'ec2.amazonaws.com';
+      event.requestParameters = { groupId: 'sg-0123456789abcdef0', ipPermissions: { items: [
+        { ipProtocol: 'tcp', fromPort: 443, toPort: 443, ipRanges: { items: [{ cidrIp: '192.0.2.0/24' }] } },
+      ] } };
+      event.responseElements = { _return: true, requestId: event.eventID, securityGroupRuleSet: { items: [
+        { securityGroupRuleId: 'sgr-0123456789abcdef0', groupId: 'sg-0123456789abcdef0', isEgress: false,
+          ipProtocol: 'tcp', fromPort: 443, toPort: 443, cidrIpv4: '192.0.2.0/24' },
+      ] } };
+    }
+    options.mutateEvent?.(event);
+  }, mutateRow(row) { const event = JSON.parse(row.CloudTrailEvent); row.EventName = event.eventName; row.EventSource = event.eventSource; options.mutateRow?.(row); } });
 }

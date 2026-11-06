@@ -33,7 +33,7 @@ test('vk hashes come from the pinned key manifests, not the circuit artifacts', 
   assert.throws(() => vkHashesFor(aws, gcpPins), /no pinned key/);
 });
 
-test('gcp claim lists observed groups only; aws claim is the fixed coarse task', async () => {
+test('gcp claim lists observed groups only; aws claim names the proved activity families', async () => {
   const groups = [{ id: 'g10', status: 'observed' }, { id: 'g2', status: 'observed' }, { id: 'g3', status: 'empty' },
     { id: 'g4', status: 'denied' }];
   const fields = await fromVerifiedBundle('gcp', gcp, { catalogDigest: 'x', policy: { cutoff: 1, windowDays: 30 }, groups },
@@ -46,6 +46,11 @@ test('gcp claim lists observed groups only; aws claim is the fixed coarse task',
   const awsFields = await fromVerifiedBundle('aws', aws, { taskType: 'iam-role-trust-update', attribution: 'iam-user', windowDays: 90 },
     { pins: awsPins });
   assert.equal(awsFields.claim, 'aws:iam-role-trust-update:iam-user');
+  const grouped = await fromVerifiedBundle('aws', aws,
+    { activities: ['iam-role-trust-update', 'security-group-ingress'], attribution: 'iam-user', windowDays: 90 }, { pins: awsPins });
+  assert.equal(grouped.claim, 'aws:activity:iam-role-trust-update,security-group-ingress:iam-user');
+  for (const activities of [[], ['security-group-ingress', 'iam-role-trust-update'], ['iam-role-trust-update', 'iam-role-trust-update'], ['s3-put']])
+    await assert.rejects(fromVerifiedBundle('aws', aws, { activities, attribution: 'iam-user', windowDays: 90 }, { pins: awsPins }), /aws activities/);
   await assert.rejects(fromVerifiedBundle('aws', gcp, {}, { pins: awsPins }), /does not match/);
   await assert.rejects(fromVerifiedBundle('gcp', gcp, { policy: { windowDays: 30 }, groups: [{ id: 'my-project', status: 'observed' }] },
     { pins: gcpPins }), /gcp group/);
