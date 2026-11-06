@@ -3,13 +3,12 @@ import { WindowManager } from '../../background/WindowManager';
 // The PLUGIN_NAVIGATE gate (kept apart from the helper set's import lines).
 import { pluginNavigateTarget } from '../../constants/pluginNavigate';
 import { confirmationManager } from '../../background/ConfirmationManager';
-import type { PluginConfig } from '@tlsn/plugin-sdk';
 import type { InterceptedRequest, InterceptedRequestHeader } from '../../types/window-manager';
 import { validateUrl } from '../../utils/url-validator';
-import { autoApprovalFor } from '../../background/autoApproval';
+import { autoApprovalFor, offscreenSessionData } from '../../background/autoApproval';
 import { logger } from '@tlsn/common';
 import { getStoredLogLevel } from '../../utils/logLevelStorage';
-import type { ApprovalMode, BackgroundMessage } from '../../types/messages';
+import type { BackgroundMessage } from '../../types/messages';
 
 const chrome = (global as typeof globalThis).chrome;
 
@@ -233,116 +232,53 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
     return; // No response needed
   }
 
-  // Handle code execution requests
-  if (request.type === 'EXEC_CODE') {
-    logger.debug('EXEC_CODE request received');
-
-    // Store requestId → tabId mapping for progress routing
-    if (request.requestId && sender.tab?.id) {
-      progressRoutes.set(request.requestId, {
+  // Run one of the built-in plugins for the embedding
+  // page. The page names the plugin (id + fingerprint) and the run's values; it
+  // never sends code (the stock code-execution handler is gone). Top-frame
+  // allowed-origin sender + built-in plugin + checked values, decided here from
+  // Chrome's sender (background/autoApproval.ts); anything else is refused.
+  if (request.type === 'RUN_BUILTIN') {
+    const approval = autoApprovalFor(request, sender, browser.runtime.id);
+    if (!approval.ok) {
+      logger.warn('RUN_BUILTIN refused:', approval.error);
+      return Promise.resolve({ success: false, error: approval.error });
+    }
+    logger.info(`Built-in plugin ${approval.plugin.id} on ${approval.origin}`);
+    const requestId = approval.requestId;
+    // The run's tab gets its progress; `pageProgress` marks the run as
+    // auto-approved (PLUGIN_PROGRESS forwarding and PLUGIN_NAVIGATE read it).
+    if (requestId && sender.tab?.id) {
+      progressRoutes.set(requestId, {
         tabId: sender.tab.id,
         createdAt: Date.now(),
+        pageProgress: true,
       });
     }
 
     // Return a Promise so the polyfill keeps the message channel open
-    // and resolves when the async work completes. This is more reliable
-    // than the sendResponse + return true pattern.
+    // and resolves when the async work completes.
     return (async () => {
       try {
-        // Step 1: Look up plugin stats (config, hash, prior execution count) via offscreen
-        let pluginConfig: PluginConfig | null = null;
-        let pluginHash = '';
-        let executionCount = 0;
-        try {
-          const stats = await getPluginStatsViaOffscreen(request.code, request.pageOrigin ?? '');
-          pluginConfig = stats.config;
-          pluginHash = stats.hash;
-          executionCount = stats.count;
-          logger.debug('Plugin stats:', {
-            config: pluginConfig,
-            hash: pluginHash,
-            count: executionCount,
-          });
-        } catch (extractError) {
-          logger.warn('Failed to get plugin stats:', extractError);
-          // Continue with defaults - user will see "Unknown Plugin" warning
-        }
-
-        // Step 2: Request user confirmation
-        const confirmRequestId = `confirm_${Date.now()}_${Math.random()}`;
-        let mode: ApprovalMode;
-        let autoApproved = false;
-
-        try {
-          // An allowlisted plugin on an allowed
-          // origin runs without the prompt ("allow all" for this run); every
-          // other origin or plugin, and any error, gets the stock prompt.
-          const auto = await autoApprovalFor(request.code, sender, browser.runtime.id);
-          if (auto) {
-            logger.info(`Auto-approved a trusted plugin ${auto.plugin.id} on ${auto.origin}`);
-            mode = auto.mode;
-            autoApproved = true;
-            const route = request.requestId ? progressRoutes.get(request.requestId) : undefined;
-            if (route) route.pageProgress = true;
-          } else {
-            mode = await confirmationManager.requestConfirmation(
-              pluginConfig,
-              confirmRequestId,
-              executionCount,
-              sender.tab?.url,
-              request.code,
-            );
-          }
-        } catch (confirmError) {
-          logger.error('Confirmation error:', confirmError);
-          return {
-            success: false,
-            error: confirmError instanceof Error ? confirmError.message : 'Confirmation failed',
-          };
-        }
-
-        // Step 3: If user denied, return rejection error
-        if (mode === 'rejected') {
-          logger.info('User rejected plugin execution');
-          return {
-            success: false,
-            error: 'User rejected plugin execution',
-          };
-        }
-
-        // Step 4: User allowed - proceed with execution
-        logger.info('User allowed plugin execution, proceeding...');
-
-        // Ensure offscreen document exists
         await createOffscreenDocument();
-
         const response = await chrome.runtime.sendMessage({
-          type: 'EXEC_CODE_OFFSCREEN',
-          code: request.code,
-          requestId: request.requestId,
-          sessionData: {
-            ...request.sessionData,
-            _approvalMode: mode,
-            _pluginHash: pluginHash,
-            // After the page's data, so a page
-            // cannot set it; SessionManager adds reportProgress only for '1'.
-            _autoApproved: autoApproved ? '1' : '0',
-          },
+          type: 'RUN_BUILTIN_OFFSCREEN',
+          pluginId: approval.plugin.id,
+          fingerprint: approval.plugin.sha256,
+          values: approval.values,
+          requestId,
+          // The page's checked keys first, then ours (so a page cannot set them).
+          sessionData: offscreenSessionData(approval),
         });
-        logger.debug('EXEC_CODE_OFFSCREEN response:', response);
+        logger.debug('RUN_BUILTIN_OFFSCREEN response:', response);
         return response;
       } catch (error) {
-        logger.error('Error executing code:', error);
+        logger.error('Error running built-in plugin:', error);
         return {
           success: false,
           error: error instanceof Error ? error.message : 'Code execution failed',
         };
       } finally {
-        // Clean up progress route
-        if (request.requestId) {
-          progressRoutes.delete(request.requestId);
-        }
+        if (requestId) progressRoutes.delete(requestId);
       }
     })();
   }
@@ -558,41 +494,6 @@ async function createOffscreenDocument(): Promise<void> {
 
 // Initialize offscreen document
 createOffscreenDocument().catch((err) => logger.error('Offscreen document error:', err));
-
-/**
- * Get plugin stats (config, content hash, prior execution count) by sending code
- * to the offscreen document, where QuickJS, SubtleCrypto and IndexedDB are available.
- */
-async function getPluginStatsViaOffscreen(
-  code: string,
-  pageOrigin: string,
-): Promise<{ config: PluginConfig | null; hash: string; count: number }> {
-  try {
-    // Ensure offscreen document exists
-    await createOffscreenDocument();
-
-    // Send message to offscreen and wait for response
-    const response = await chrome.runtime.sendMessage({
-      type: 'GET_PLUGIN_STATS_OFFSCREEN',
-      code,
-      pageOrigin,
-    });
-
-    if (response?.success) {
-      return {
-        config: (response.config as PluginConfig | null) ?? null,
-        hash: (response.hash as string) ?? '',
-        count: (response.count as number) ?? 0,
-      };
-    }
-
-    logger.warn('Plugin stats lookup returned no data:', response?.error);
-    return { config: null, hash: '', count: 0 };
-  } catch (error) {
-    logger.error('Failed to get plugin stats via offscreen:', error);
-    return { config: null, hash: '', count: 0 };
-  }
-}
 
 // Periodic cleanup of invalid windows and stale progress routes (every 5 minutes)
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes

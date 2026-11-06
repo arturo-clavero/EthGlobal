@@ -38,12 +38,18 @@ export type BackgroundMessage =
   | { type: 'PLUGIN_PROGRESS'; requestId: string; progress: unknown }
   // Offscreen → background, auto-approved runs only (exact GitHub URLs).
   | { type: 'PLUGIN_NAVIGATE'; requestId: string; windowId: number; url: string }
+  // Content script → background. Names one of
+  // the extension's built-in plugins (id + fingerprint) and the run's values; no
+  // code. Checked in the background from Chrome's sender (background/autoApproval.ts).
   | {
-      type: 'EXEC_CODE';
-      code: string;
-      requestId: string;
-      sessionData?: Record<string, unknown>;
-      pageOrigin?: string;
+      type: 'RUN_BUILTIN';
+      pluginId: unknown;
+      fingerprint: unknown;
+      verifierUrl: unknown;
+      proxyUrl: unknown;
+      params: unknown;
+      requestId: unknown;
+      sessionData: unknown;
     }
   | { type: 'CLOSE_WINDOW'; windowId: number }
   | {
@@ -79,13 +85,16 @@ export type ContentMessage =
 /** Messages handled by the Offscreen document */
 export type OffscreenMessage =
   | { type: 'PROCESS_DATA' }
+  // Background → offscreen; the code is read from the
+  // package in the offscreen document (offscreen/builtinRun.ts).
   | {
-      type: 'EXEC_CODE_OFFSCREEN';
-      code: string;
-      requestId?: string;
-      sessionData?: Record<string, unknown>;
+      type: 'RUN_BUILTIN_OFFSCREEN';
+      pluginId: string;
+      fingerprint: string;
+      values: { verifierUrl: string; proxyUrl: string; params: string };
+      requestId: string | null;
+      sessionData: Record<string, string>;
     }
-  | { type: 'GET_PLUGIN_STATS_OFFSCREEN'; code: string; pageOrigin: string }
   // Forwarded by the background (distinct type so the offscreen handles each
   // inbound chunk exactly once — a content script's runtime.sendMessage is also
   // broadcast directly to the offscreen, which would otherwise double-deliver).

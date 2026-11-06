@@ -24,7 +24,7 @@ export interface PluginNavigateGate {
   extensionId: string;
   /** Our offscreen document's URL (runtime.getURL('offscreen.html')). */
   offscreenUrl: string;
-  /** True only for a live run that the background auto-approved (EXEC_CODE marked its route). */
+  /** True only for a live run that the background auto-approved (RUN_BUILTIN marked its route). */
   isAutoApprovedRun: (requestId: string) => boolean;
   /** The tab of a window the extension manages (opened by a plugin); undefined otherwise. */
   tabOfWindow: (windowId: number) => number | undefined;
