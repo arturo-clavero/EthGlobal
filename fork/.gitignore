@@ -1,0 +1,3 @@
+# build.sh work tree and unpacked extension output
+/.work/
+/out/
