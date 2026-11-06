@@ -1,0 +1,6 @@
+[package]
+name = "gcp_private_atoms_small"
+type = "bin"
+
+[dependencies]
+gcp_private_json = { path = "../lib" }
