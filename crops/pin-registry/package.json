@@ -1,0 +1,25 @@
+{
+  "name": "@tlsn-fork/pin-registry",
+  "version": "0.1.0",
+  "description": "Publish and read signed proof-bundle attestations and public bundles on Arkiv",
+  "type": "module",
+  "license": "MIT OR Apache-2.0",
+  "exports": {
+    ".": "./index.mjs",
+    "./read": "./read.mjs"
+  },
+  "files": [
+    "*.mjs",
+    "!*.test.mjs"
+  ],
+  "engines": {
+    "node": ">=22.10"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1"
+  },
+  "dependencies": {
+    "@arkiv-network/sdk": "1.0.1",
+    "viem": "2.57.6"
+  }
+}
