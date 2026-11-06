@@ -37,6 +37,9 @@ export function takePrivateCompletion(
     const keys = Reflect.ownKeys(message);
     if (message.success === true && keys.length === 4 && ['type', 'requestId', 'success', 'result'].every(key => keys.includes(key))) {
       response = { success: true, result: (provider === 'aws' ? sanitizeAwsPrivateResult : sanitizeGcpPrivateResult)(message.result) };
+    } else if (provider === 'aws' && message.success === false && message.error === 'AWS_ACTIVITY_ACCESS_REQUIRED' &&
+        keys.length === 4 && ['type', 'requestId', 'success', 'error'].every(key => keys.includes(key))) {
+      response = { success: false, error: 'AWS_ACTIVITY_ACCESS_REQUIRED' };
     } else throw new Error();
   } catch { response = { success: false, error: provider === 'aws' ? 'AWS_PRIVATE_PROVING_FAILED' : 'GCP_PRIVATE_PROVING_FAILED' }; }
   return { requestId: message.requestId, tabId: route.tabId, response };

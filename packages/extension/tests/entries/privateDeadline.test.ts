@@ -70,3 +70,43 @@ it('reports an invalidated Chrome context before acknowledging a private run', a
     vi.useRealTimers(); vi.restoreAllMocks();
   }
 });
+
+
+it('passes a fixed AWS permission failure only from the background and keeps GCP errors generic', async () => {
+  vi.resetModules(); vi.useFakeTimers();
+  vi.mocked(browser.runtime.sendMessage).mockImplementation(async message => message.type === 'PING' ? { type: 'PONG' } : { success: true, pending: true });
+  const listeners = vi.spyOn(window, 'addEventListener');
+  const runtimeListeners = vi.spyOn(browser.runtime.onMessage, 'addListener');
+  const replies = vi.spyOn(window, 'postMessage').mockImplementation(() => {});
+  vi.spyOn(document.head, 'appendChild').mockImplementation(node => node);
+  let handler: EventListener | undefined;
+  let runtimeHandler: Parameters<typeof browser.runtime.onMessage.addListener>[0] | undefined;
+  try {
+    await import('../../src/entries/Content/index');
+    handler = listeners.mock.calls.find(([type]) => type === 'message')?.[1] as EventListener;
+    runtimeHandler = runtimeListeners.mock.calls.at(-1)?.[0];
+    expect(runtimeHandler).toBeTypeOf('function');
+    for (const [pluginId, requestId] of [['aws-private-work', 'denied'], ['aws-private-work', 'raw-error'], ['gcp-work', 'gcp-denied']]) {
+      handler(new MessageEvent('message', { source: window, origin: window.location.origin,
+        data: { type: 'TLSN_RUN_BUILTIN', payload: { pluginId, requestId } } }));
+    }
+    await vi.advanceTimersByTimeAsync(0); replies.mockClear();
+    const sender = { id: browser.runtime.id, url: browser.runtime.getURL('background.bundle.js') };
+    const failure = { type: 'RUN_BUILTIN_COMPLETE', requestId: 'denied', success: false, error: 'AWS_ACTIVITY_ACCESS_REQUIRED' };
+    runtimeHandler!(failure, { ...sender, url: sender.url + '?forged' });
+    expect(replies).not.toHaveBeenCalled();
+    runtimeHandler!(failure, sender);
+    runtimeHandler!({ ...failure, requestId: 'raw-error', error: 'PRIVATE_ARN_SENTINEL' }, sender);
+    runtimeHandler!({ ...failure, requestId: 'gcp-denied' }, sender);
+    expect(replies.mock.calls.map(([message]) => message)).toEqual([
+      { type: 'TLSN_RUN_BUILTIN_RESPONSE', requestId: 'denied', success: false, error: 'AWS_ACTIVITY_ACCESS_REQUIRED' },
+      { type: 'TLSN_RUN_BUILTIN_RESPONSE', requestId: 'raw-error', success: false, error: 'AWS_PRIVATE_PROVING_FAILED' },
+      { type: 'TLSN_RUN_BUILTIN_RESPONSE', requestId: 'gcp-denied', success: false, error: 'GCP_PRIVATE_PROVING_FAILED' },
+    ]);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    if (handler) window.removeEventListener('message', handler);
+    if (runtimeHandler) browser.runtime.onMessage.removeListener(runtimeHandler);
+    vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks();
+  }
+});

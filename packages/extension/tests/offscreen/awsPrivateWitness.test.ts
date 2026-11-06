@@ -162,3 +162,19 @@ it('rejects an invalid discovered count and erases captured credentials', async 
     vi.restoreAllMocks();
   }
 });
+
+
+it('retains only a fixed collection-permission flag while erasing captured credentials', async () => {
+  for (const failure of [new Error('AWS_ACTIVITY_ACCESS_REQUIRED'), new Error('PRIVATE_ARN_SENTINEL'), { message: 'AWS_ACTIVITY_ACCESS_REQUIRED' }]) {
+    const clear = vi.fn();
+    vi.spyOn(awsClient, 'createAwsLocalSession').mockReturnValue({ prepare: vi.fn().mockRejectedValue(failure), clear } as never);
+    const run = create(), credentials = { secretAccessKey: 'PRIVATE_CREDENTIAL_SENTINEL' };
+    const denied = failure instanceof Error && failure.message === 'AWS_ACTIVITY_ACCESS_REQUIRED';
+    await expect(run.collect(async () => ({ credentials }) as never)).rejects.toThrow(denied ? 'AWS_ACTIVITY_ACCESS_REQUIRED' : 'AWS_PRIVATE_COLLECTION_FAILED');
+    expect(credentials.secretAccessKey).toBe('');
+    run.clear();
+    expect(clear).toHaveBeenCalledOnce();
+    expect(run.activityAccessRequired).toBe(denied);
+    vi.restoreAllMocks();
+  }
+});

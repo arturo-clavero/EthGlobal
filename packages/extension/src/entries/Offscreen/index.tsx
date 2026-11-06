@@ -127,8 +127,10 @@ const OffscreenApp: React.FC = () => {
                 await browser.runtime.sendMessage({ type: `${prefix}_COMPLETE`, requestId: request.requestId, success: true, result });
               } catch {
                 if (!aws) gcpPrivateDiagnostic('EXECUTE_FAILED');
+                const failure = aws && privateModule instanceof AwsPrivateWitnessRun && privateModule.activityAccessRequired
+                  ? 'AWS_ACTIVITY_ACCESS_REQUIRED' : privateError;
                 await browser.runtime.sendMessage({ type: `${prefix}_COMPLETE`, requestId: request.requestId,
-                  success: false, error: privateError }).catch(() => {});
+                  success: false, error: failure }).catch(() => {});
               } finally { clearInterval(heartbeat); privateModule!.clear(); privateRunning = false; }
             })();
             return { success: true, pending: true, requestId: request.requestId };

@@ -9,6 +9,8 @@ export class AwsPrivateWitnessRun extends PrivateWitnessRun {
   private collection?: ReturnType<typeof createAwsLocalSession>;
   private attempt: AwsPrivateAttempt;
   private stopped = false;
+  private collectionAccessRequired = false;
+  get activityAccessRequired(): boolean { return this.collectionAccessRequired; }
   private readonly collectionSteps: { step: string; host: string }[];
   constructor(run: Record<string, string>, requestId: string | null, attempt: AwsPrivateAttempt, module: AwsPrivateModule) {
     validateAwsAttempt(attempt);
@@ -39,6 +41,9 @@ export class AwsPrivateWitnessRun extends PrivateWitnessRun {
         step: index ? `E${index - 1}` : 'identity', host: index ? 'cloudtrail.us-east-1.amazonaws.com' : 'iam.amazonaws.com',
       })));
       return requests;
+    } catch (error) {
+      this.collectionAccessRequired = error instanceof Error && error.message === 'AWS_ACTIVITY_ACCESS_REQUIRED';
+      throw new Error(this.collectionAccessRequired ? 'AWS_ACTIVITY_ACCESS_REQUIRED' : 'AWS_PRIVATE_COLLECTION_FAILED');
     }
     finally { if (value?.credentials) for (const key of Object.keys(value.credentials)) value.credentials[key as keyof AwsCapture['credentials']] = ''; }
   }
