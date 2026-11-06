@@ -262,6 +262,7 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
     const privateGcp = approval.plugin.id === 'gcp-work';
     if ((privateGcp && (!requestId || sender.tab?.id === undefined || progressRoutes.has(requestId))) ||
         (requestId && progressRoutes.get(requestId)?.gcpPrivate)) {
+      try { console.debug('GCP_PRIVATE_ROUTE_REFUSED'); } catch { /* Keep the original refusal. */ }
       return Promise.resolve({ success: false, error: 'GCP_PRIVATE_PROVING_FAILED' });
     }
     // The run's tab gets its progress; `pageProgress` marks the run as
@@ -279,9 +280,12 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
     // and resolves when the async work completes.
     return (async () => {
       let pendingPrivate = false;
+      let stage: 'CREATE_OFFSCREEN' | 'WAIT_OFFSCREEN' | 'SEND_OFFSCREEN' = 'CREATE_OFFSCREEN';
       try {
         await createOffscreenDocument();
+        stage = 'WAIT_OFFSCREEN';
         await waitForOffscreenReady(() => chrome.runtime.sendMessage({ type: 'PROCESS_DATA' }));
+        stage = 'SEND_OFFSCREEN';
         const response = await chrome.runtime.sendMessage({
           type: 'RUN_BUILTIN_OFFSCREEN',
           pluginId: approval.plugin.id,
@@ -295,6 +299,9 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
         if (!privateGcp) logger.debug('RUN_BUILTIN_OFFSCREEN response:', response);
         return response;
       } catch (error) {
+        if (privateGcp) {
+          try { console.debug(`GCP_PRIVATE_START_FAILED_${stage}`); } catch { /* Preserve failure and route cleanup. */ }
+        }
         if (!privateGcp) logger.error('Error running built-in plugin:', error);
         return {
           success: false,

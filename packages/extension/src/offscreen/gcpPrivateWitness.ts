@@ -46,7 +46,7 @@ const PROVE_TIMEOUT_MS = 11 * 60 * 1000;
 type AcceptStage = 'PRECONDITION' | 'OPENINGS' | 'RESULT_SHAPE' | 'REVEAL_MATCH' |
   'OPENING_LOOKUP' | 'COMMITMENT_MATCH' | 'IDENTITY';
 export function gcpPrivateDiagnostic(code: 'ACCEPT_ENTERED' | 'ACCEPTED' | `ACCEPT_FAILED_${AcceptStage}` |
-  'EXECUTE_FAILED' | 'HEARTBEAT_NOT_OK' | 'HEARTBEAT_REJECTED'): void {
+  'EXECUTE_FAILED' | 'HEARTBEAT_NOT_OK' | 'HEARTBEAT_REJECTED' | 'RUN_BUSY' | 'RUN_ID_MISSING' | 'MODULE_FAILED'): void {
   try { console.debug(`GCP_PRIVATE_${code}`); } catch { /* Diagnostics must not affect cleanup or the original error. */ }
 }
 function fail(): never { throw new Error('GCP_PRIVATE_PROOF_INVALID'); }

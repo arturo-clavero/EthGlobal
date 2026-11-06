@@ -68,7 +68,10 @@ const OffscreenApp: React.FC = () => {
               runSessionData(request.sessionData, prepared.sha256), privateModule);
           };
           if (request.pluginId === 'gcp-work') {
-            if (privateGcpRunning || !request.requestId) return { success: false, error: 'GCP_PRIVATE_PROVING_FAILED' };
+            if (privateGcpRunning || !request.requestId) {
+              gcpPrivateDiagnostic(privateGcpRunning ? 'RUN_BUSY' : 'RUN_ID_MISSING');
+              return { success: false, error: 'GCP_PRIVATE_PROVING_FAILED' };
+            }
             let privateModule: ReturnType<typeof createGcpPrivateModule>;
             try {
               const params = JSON.parse(request.values.params);
@@ -83,7 +86,10 @@ const OffscreenApp: React.FC = () => {
                     progress: { method: 'GCP_WORK', status: 'busy', index: completedProofs, total: 128 } }).catch(() => {});
                 },
               });
-            } catch { return { success: false, error: 'GCP_PRIVATE_PROVING_FAILED' }; }
+            } catch {
+              gcpPrivateDiagnostic('MODULE_FAILED');
+              return { success: false, error: 'GCP_PRIVATE_PROVING_FAILED' };
+            }
             privateGcpRunning = true;
             const heartbeat = setInterval(() => {
               browser.runtime.sendMessage({ type: 'GCP_PRIVATE_HEARTBEAT', requestId: request.requestId })

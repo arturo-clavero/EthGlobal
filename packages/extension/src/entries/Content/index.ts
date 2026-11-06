@@ -386,6 +386,9 @@ window.addEventListener('message', (event) => {
       })
       .catch((error) => {
         finishPrivateRun(requestId);
+        if (p.pluginId === 'gcp-work') {
+          try { console.debug('GCP_PRIVATE_CONTENT_SEND_FAILED'); } catch { /* Preserve the generic failure reply. */ }
+        }
         if (p.pluginId !== 'gcp-work') logger.error('[Content Script] Failed to run the built-in plugin:', error);
         reply({ success: false, error: p.pluginId === 'gcp-work' ? 'GCP_PRIVATE_PROVING_FAILED' : error?.message || 'Code execution failed' });
       });
