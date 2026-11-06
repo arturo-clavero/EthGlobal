@@ -54,7 +54,7 @@ const workerApi = Comlink.wrap<{
     commit: Commit | undefined;
   };
   reveal: (proverId: string, revealConfig: Reveal, commitConfig?: Commit) => Promise<RevealOutput>;
-  freeProver: (proverId: string) => void;
+  freeProver: (proverId: string) => Promise<void>;
 }>(worker);
 
 // ============================================================================

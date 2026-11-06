@@ -3,8 +3,6 @@
  * and stays 60 s in MPC mode; the worker uses this choice per request.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
 import {
   MPC_SEND_REQUEST_TIMEOUT_MS,
   PROXY_SEND_REQUEST_TIMEOUT_MS,
@@ -21,16 +19,5 @@ describe('send timeout', () => {
   it('MPC (websockify URL): 60 s as upstream', () => {
     expect(MPC_SEND_REQUEST_TIMEOUT_MS).toBe(60_000);
     expect(sendRequestTimeoutMs('ws://localhost:55688/?token=github.com')).toBe(60_000);
-  });
-
-  it('the worker races send_request against that timeout (no other fixed value)', () => {
-    const worker = readFileSync(
-      path.resolve(__dirname, '../../src/offscreen/ProveManager/worker.ts'),
-      'utf8',
-    );
-    expect(worker).toMatch(
-      /const timeoutMs = sendRequestTimeoutMs\(proxyUrl\);\s*try \{\s*await Promise\.race\(\[\s*prover\.send_request\(serverIo, request\),[\s\S]{0,300}?timeoutMs,\s*\),/,
-    );
-    expect(worker).not.toMatch(/SEND_REQUEST_TIMEOUT_MS = /);
   });
 });

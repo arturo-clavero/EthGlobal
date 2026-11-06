@@ -111,13 +111,83 @@ interface IoChannel {
 
 // Store prover instances in the worker to avoid serialization issues.
 const provers: Map<string, Prover> = new Map();
+interface ProverLifecycle {
+  channels: Set<IoChannel>;
+  pending?: Promise<unknown>;
+  cancelled: boolean;
+  closing?: Promise<void>;
+}
+const lifecycles = new Map<string, ProverLifecycle>();
 let nextProverId = 0;
+
+async function closeChannels(lifecycle: ProverLifecycle): Promise<void> {
+  lifecycle.cancelled = true;
+  const results = await Promise.allSettled(
+    Array.from(lifecycle.channels, (channel) => Promise.resolve().then(() => channel.close())),
+  );
+  const failure = results.find((result) => result.status === 'rejected');
+  if (failure?.status === 'rejected') throw failure.reason;
+}
+
+/** A timeout stops transport IO; it does not cancel a borrowed WASM future. */
+async function runOperation<T>(
+  proverId: string,
+  operation: (prover: Prover, lifecycle: ProverLifecycle) => Promise<T>,
+  timeout?: { milliseconds: number; message: string },
+): Promise<T> {
+  const prover = provers.get(proverId);
+  const lifecycle = lifecycles.get(proverId);
+  if (!prover || !lifecycle) throw new Error(`Prover not found: ${proverId}`);
+  if (lifecycle.cancelled) throw new Error(`Prover cancelled: ${proverId}`);
+  if (lifecycle.pending) throw new Error(`Prover operation already pending: ${proverId}`);
+  const pending = Promise.resolve().then(() => {
+    if (lifecycle.cancelled) throw new Error(`Prover cancelled: ${proverId}`);
+    return operation(prover, lifecycle);
+  });
+  lifecycle.pending = pending;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const startedAt = performance.now();
+  const timeoutError = timeout ? new Error(timeout.message) : undefined;
+  const diagnostic = (code: string) => {
+    const elapsedMs = Math.round(performance.now() - startedAt);
+    if (Number.isSafeInteger(elapsedMs) && elapsedMs >= 0) console.debug(code, elapsedMs);
+  };
+  try {
+    const result = await (timeout
+      ? Promise.race([
+          pending,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+              diagnostic('TLSN_OPERATION_TIMEOUT_FIRED');
+              reject(timeoutError);
+            }, timeout.milliseconds);
+          }),
+        ])
+      : pending);
+    if (lifecycle.cancelled) throw new Error(`Prover cancelled: ${proverId}`);
+    return result;
+  } catch (error) {
+    clearTimeout(timer);
+    const timedOut = timeoutError !== undefined && error === timeoutError;
+    if (timedOut) diagnostic('TLSN_TIMEOUT_IO_CLOSE_STARTED');
+    // Preserve the operation failure if closing a transport also fails.
+    await closeChannels(lifecycle).catch(() => undefined);
+    // Local close attempts settled; this does not assert remote closure or erasure.
+    if (timedOut) diagnostic('TLSN_TIMEOUT_IO_CLOSE_SETTLED');
+    await pending.catch(() => undefined);
+    if (timedOut) diagnostic('TLSN_TIMEOUT_WASM_SETTLED');
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    if (lifecycle.pending === pending) lifecycle.pending = undefined;
+  }
+}
 
 /**
  * Creates an IoChannel adapter from a WebSocket URL.
  * This runs in the worker to avoid cross-thread communication overhead.
  */
-function createIoChannel(url: string): Promise<IoChannel> {
+function createIoChannel(url: string, lifecycle: ProverLifecycle): Promise<IoChannel> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url);
     ws.binaryType = 'arraybuffer';
@@ -127,43 +197,69 @@ function createIoChannel(url: string): Promise<IoChannel> {
     let closed = false;
     let error: Error | null = null;
 
+    const channel: IoChannel = {
+      async read(): Promise<Uint8Array | null> {
+        if (error) throw error;
+        if (readQueue.length > 0) return readQueue.shift()!;
+        if (closed) return null;
+        return new Promise((res) => {
+          readResolver = res;
+        });
+      },
+      // tlsn-wasm alpha.15 io.rs poll_write/poll_close discard the returned
+      // Promise; wasm_bindgen(catch) only propagates synchronous JS throws.
+      write(data: Uint8Array): Promise<void> {
+        if (closed) throw new Error('WebSocket is closed');
+        if (error) throw error;
+        ws.send(data as Uint8Array<ArrayBuffer>);
+        return Promise.resolve();
+      },
+      close(): Promise<void> {
+        for (const bytes of readQueue) bytes.fill(0);
+        readQueue.length = 0;
+        if (readResolver) {
+          const resolver = readResolver;
+          readResolver = null;
+          resolver(null);
+        }
+        reject(new Error('WebSocket closed before opening'));
+        if (!closed) {
+          closed = true;
+          ws.close();
+        }
+        return Promise.resolve();
+      },
+    };
+    // Register while CONNECTING so cancellation cannot strand an opening socket.
+    lifecycle.channels.add(channel);
     ws.onopen = () => {
-      resolve({
-        async read(): Promise<Uint8Array | null> {
-          if (error) throw error;
-          if (readQueue.length > 0) return readQueue.shift()!;
-          if (closed) return null;
-          return new Promise((res) => {
-            readResolver = res;
-          });
-        },
-        async write(data: Uint8Array): Promise<void> {
-          if (closed) throw new Error('WebSocket is closed');
-          if (error) throw error;
-          ws.send(data as Uint8Array<ArrayBuffer>);
-        },
-        async close(): Promise<void> {
-          if (!closed) {
-            closed = true;
-            ws.close();
-          }
-        },
-      });
+      if (closed || lifecycle.cancelled) {
+        // Cancellation already rejected the connection waiter. A late close
+        // failure must not escape this event callback as an uncaught exception.
+        try {
+          ws.close();
+        } catch {}
+        return;
+      }
+      resolve(channel);
     };
 
     ws.onerror = (event) => {
       console.error('[Worker] WebSocket error:', url, event);
       const err = new Error(`WebSocket connection failed: ${url}`);
       error = err;
-      if (!closed) {
-        closed = true;
-        ws.close();
-        reject(err);
-      }
+      reject(err);
+      void Promise.resolve()
+        .then(() => channel.close())
+        .catch(() => undefined);
     };
 
     ws.onmessage = (event) => {
       const data = new Uint8Array(event.data as ArrayBuffer);
+      if (closed) {
+        data.fill(0);
+        return;
+      }
       if (readResolver) {
         const resolver = readResolver;
         readResolver = null;
@@ -175,6 +271,7 @@ function createIoChannel(url: string): Promise<IoChannel> {
 
     ws.onclose = (_event) => {
       closed = true;
+      reject(new Error('WebSocket closed before opening'));
       if (readResolver) {
         const resolver = readResolver;
         readResolver = null;
@@ -208,6 +305,7 @@ async function createProver(config: ProverConfig): Promise<string> {
   );
 
   provers.set(id, prover);
+  lifecycles.set(id, { channels: new Set(), cancelled: false });
   return id;
 }
 
@@ -218,25 +316,14 @@ async function createProver(config: ProverConfig): Promise<string> {
 const SETUP_TIMEOUT_MS = 30_000;
 
 async function setupProver(proverId: string, verifierUrl: string): Promise<void> {
-  const prover = provers.get(proverId);
-  if (!prover) throw new Error(`Prover not found: ${proverId}`);
-
-  const verifierIo = await createIoChannel(verifierUrl);
-  try {
-    await Promise.race([
-      prover.setup(verifierIo),
-      new Promise<never>((_, reject) =>
-        setTimeout(
-          () =>
-            reject(new Error(`setupProver timed out after ${SETUP_TIMEOUT_MS}ms for ${proverId}`)),
-          SETUP_TIMEOUT_MS,
-        ),
-      ),
-    ]);
-  } catch (err) {
-    await verifierIo.close();
-    throw err;
-  }
+  return runOperation(
+    proverId,
+    async (prover, lifecycle) => prover.setup(await createIoChannel(verifierUrl, lifecycle)),
+    {
+      milliseconds: SETUP_TIMEOUT_MS,
+      message: `setupProver timed out after ${SETUP_TIMEOUT_MS}ms for ${proverId}`,
+    },
+  );
 }
 
 // ============================================================================
@@ -247,20 +334,23 @@ async function setupProver(proverId: string, verifierUrl: string): Promise<void>
 // go to a main-thread `sendOut` callback (→ page → data channel); inbound bytes
 // are pushed back via deliverToWasm(). This is a plain byte bridge — no WebRTC.
 //
-// These are module-level singletons, so they assume ONE relayed proof at a time
-// per worker. That holds because the host page disables its Prove button while a
-// proof is in flight, serializing relayed proofs; inbound RELAY_IN chunks are
-// likewise forwarded to the single active prover without a requestId. Concurrent
-// relayed proofs in one offscreen would cross-talk on this state.
+// Inbound RELAY_IN chunks have no requestId, so delivery still assumes ONE active
+// relayed proof per worker. Each channel owns its IO state so cleanup of an old
+// operation cannot close, erase, or read from a replacement channel.
 // ============================================================================
 
-let relayInbox: Uint8Array[] = [];
-let relayReadResolver: ((value: Uint8Array | null) => void) | null = null;
-let relayClosed = false;
-let relaySendOut: ((bytes: Uint8Array) => void) | null = null;
+interface RelayChannel extends IoChannel {
+  deliver(bytes: Uint8Array): void;
+  signalClosed(): void;
+}
+let activeRelay: RelayChannel | undefined;
 
-function relayIo(): IoChannel {
-  return {
+function relayIo(sendOut: (bytes: Uint8Array) => void): RelayChannel {
+  let relayInbox: Uint8Array[] = [];
+  let relayReadResolver: ((value: Uint8Array | null) => void) | null = null;
+  let relayClosed = false;
+  let relaySendOut: ((bytes: Uint8Array) => void) | null = sendOut;
+  const channel: RelayChannel = {
     async read(): Promise<Uint8Array | null> {
       if (relayInbox.length > 0) return relayInbox.shift()!;
       if (relayClosed) return null;
@@ -268,35 +358,56 @@ function relayIo(): IoChannel {
         relayReadResolver = res;
       });
     },
-    async write(data: Uint8Array): Promise<void> {
+    // Match the pinned fire-and-forget WASM adapter's synchronous error ABI.
+    write(data: Uint8Array): Promise<void> {
+      if (relayClosed) throw new Error('Relay is closed');
       // Copy off (possibly shared) WASM memory before crossing to the main thread.
       relaySendOut?.(data.slice());
+      return Promise.resolve();
     },
-    async close(): Promise<void> {
-      /* the main thread / page owns the data channel lifecycle */
+    close(): Promise<void> {
+      // The page still owns the data channel; stop this worker's IO immediately.
+      channel.signalClosed();
+      for (const bytes of relayInbox) bytes.fill(0);
+      relayInbox = [];
+      relaySendOut = null;
+      if (activeRelay === channel) activeRelay = undefined;
+      return Promise.resolve();
+    },
+    deliver(bytes: Uint8Array): void {
+      if (relayClosed) {
+        bytes.fill(0);
+        return;
+      }
+      if (relayReadResolver) {
+        const resolve = relayReadResolver;
+        relayReadResolver = null;
+        resolve(bytes);
+      } else {
+        relayInbox.push(bytes);
+      }
+    },
+    signalClosed(): void {
+      relayClosed = true;
+      if (relayReadResolver) {
+        const resolve = relayReadResolver;
+        relayReadResolver = null;
+        resolve(null);
+      }
     },
   };
+  return channel;
 }
 
 /** Push bytes received from the relay (called from the main thread). */
 function deliverToWasm(bytes: Uint8Array): void {
-  if (relayReadResolver) {
-    const resolve = relayReadResolver;
-    relayReadResolver = null;
-    resolve(bytes);
-  } else {
-    relayInbox.push(bytes);
-  }
+  if (activeRelay) activeRelay.deliver(bytes);
+  else bytes.fill(0);
 }
 
 /** Signal the relayed channel closed (EOF). */
 function signalRelayClosed(): void {
-  relayClosed = true;
-  if (relayReadResolver) {
-    const resolve = relayReadResolver;
-    relayReadResolver = null;
-    resolve(null);
-  }
+  activeRelay?.signalClosed();
 }
 
 /** Set up the prover over the relayed channel instead of a WebSocket. */
@@ -304,26 +415,19 @@ async function setupProverRelay(
   proverId: string,
   sendOut: (bytes: Uint8Array) => void,
 ): Promise<void> {
-  const prover = provers.get(proverId);
-  if (!prover) throw new Error(`Prover not found: ${proverId}`);
-
-  relayInbox = [];
-  relayReadResolver = null;
-  relayClosed = false;
-  relaySendOut = sendOut;
-
-  await Promise.race([
-    prover.setup(relayIo()),
-    new Promise<never>((_, reject) =>
-      setTimeout(
-        () =>
-          reject(
-            new Error(`setupProverRelay timed out after ${SETUP_TIMEOUT_MS}ms for ${proverId}`),
-          ),
-        SETUP_TIMEOUT_MS,
-      ),
-    ),
-  ]);
+  return runOperation(
+    proverId,
+    async (prover, lifecycle) => {
+      const channel = relayIo(sendOut);
+      activeRelay = channel;
+      lifecycle.channels.add(channel);
+      await prover.setup(channel);
+    },
+    {
+      milliseconds: SETUP_TIMEOUT_MS,
+      message: `setupProverRelay timed out after ${SETUP_TIMEOUT_MS}ms for ${proverId}`,
+    },
+  );
 }
 
 /**
@@ -336,28 +440,21 @@ async function sendRequest(
   proxyUrl: string | undefined,
   request: HttpRequest,
 ): Promise<void> {
-  const prover = provers.get(proverId);
-  if (!prover) throw new Error(`Prover not found: ${proverId}`);
-
   // Proxy mode: the WASM prover routes server traffic over the verifier
   // session mux internally and rejects a server_io. MPC mode: open a
   // websockify channel to the target server and pass it as server_io.
-  const serverIo = proxyUrl ? await createIoChannel(proxyUrl) : undefined;
   const timeoutMs = sendRequestTimeoutMs(proxyUrl);
-  try {
-    await Promise.race([
-      prover.send_request(serverIo, request),
-      new Promise<never>((_, reject) =>
-        setTimeout(
-          () => reject(new Error(`sendRequest timed out after ${timeoutMs}ms for ${proverId}`)),
-          timeoutMs,
-        ),
-      ),
-    ]);
-  } catch (err) {
-    await serverIo?.close();
-    throw err;
-  }
+  return runOperation(
+    proverId,
+    async (prover, lifecycle) => {
+      const serverIo = proxyUrl ? await createIoChannel(proxyUrl, lifecycle) : undefined;
+      await prover.send_request(serverIo, request);
+    },
+    {
+      milliseconds: timeoutMs,
+      message: `sendRequest timed out after ${timeoutMs}ms for ${proverId}`,
+    },
+  );
 }
 
 /**
@@ -384,10 +481,7 @@ async function reveal(
   revealConfig: Reveal,
   commitConfig?: Commit,
 ): Promise<RevealOutput> {
-  const prover = provers.get(proverId);
-  if (!prover) throw new Error(`Prover not found: ${proverId}`);
-
-  return prover.reveal(revealConfig, commitConfig ?? null);
+  return runOperation(proverId, (prover) => prover.reveal(revealConfig, commitConfig ?? null));
 }
 
 /**
@@ -459,12 +553,26 @@ function computeReveal(
 /**
  * Frees a prover instance.
  */
-function freeProver(proverId: string): void {
+async function freeProver(proverId: string): Promise<void> {
   const prover = provers.get(proverId);
-  if (prover) {
-    prover.free();
+  const lifecycle = lifecycles.get(proverId);
+  if (!prover || !lifecycle) return;
+  lifecycle.closing ??= (async () => {
+    // The pinned WASM API has no abort. Never free while its future is borrowed,
+    // even if an unsupported operation fails to settle after transport EOF.
+    let closeError: unknown;
+    try {
+      await closeChannels(lifecycle);
+    } catch (error) {
+      closeError = error;
+    }
+    await lifecycle.pending?.catch(() => undefined);
     provers.delete(proverId);
-  }
+    lifecycles.delete(proverId);
+    prover.free();
+    if (closeError) throw closeError;
+  })();
+  return lifecycle.closing;
 }
 
 export default async function init(config?: {
