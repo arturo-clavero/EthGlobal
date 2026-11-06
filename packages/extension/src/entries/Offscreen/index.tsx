@@ -6,6 +6,7 @@ import { logger } from '@tlsn/common';
 import { getStoredLogLevel } from '../../utils/logLevelStorage';
 import type { OffscreenMessage } from '../../types/messages';
 import { prepareBuiltInRun, readPackagedFile } from '../../offscreen/builtinRun';
+import { runSessionData } from '../../offscreen/pluginHash';
 
 const OffscreenApp: React.FC = () => {
   useEffect(() => {
@@ -63,7 +64,8 @@ const OffscreenApp: React.FC = () => {
             const result = await sm.executePlugin(
               prepared.code,
               request.requestId ?? undefined,
-              request.sessionData,
+              // The runner reports the sha256 of the packaged plugin it runs.
+              runSessionData(request.sessionData, prepared.sha256),
             );
             logger.debug('Plugin execution result:', result);
             return { success: true, result, requestId: request.requestId };

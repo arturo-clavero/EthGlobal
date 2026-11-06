@@ -45,7 +45,8 @@ export interface BuiltInRunDeps {
 }
 
 /**
- * The code to execute for this message, or why not. The sender must be our
+ * The code to execute for this message (and the sha256 of the packaged file
+ * it comes from), or why not. The sender must be our
  * background (our ID, no tab: a content script always has one), the plugin a
  * built-in version, the packaged file exactly that version, the values valid.
  */
@@ -53,7 +54,7 @@ export async function prepareBuiltInRun(
   msg: unknown,
   sender: OffscreenSender,
   deps: BuiltInRunDeps,
-): Promise<{ code: string } | { error: string }> {
+): Promise<{ code: string; sha256: string } | { error: string }> {
   try {
     if (!sender || sender.id !== deps.extensionId || sender.tab) return { error: 'NOT_BACKGROUND' };
     if (deps.backgroundUrl && sender.url && sender.url !== deps.backgroundUrl) {
@@ -63,12 +64,15 @@ export async function prepareBuiltInRun(
     const found = findBuiltInPlugin(m.pluginId, m.fingerprint, deps.plugins ?? BUILTIN_PLUGINS);
     if ('error' in found) return { error: found.error };
     const template = await deps.readPackaged(builtInPluginPath(found.plugin));
-    if ((await sha256Hex(template)) !== found.plugin.sha256) return { error: 'PLUGIN_CORRUPT' };
+    const sha256 = await sha256Hex(template);
+    if (sha256 !== found.plugin.sha256) return { error: 'PLUGIN_CORRUPT' };
     const layout = pluginLayout(template);
     if (JSON.stringify(layout) !== JSON.stringify(found.plugin.layout))
       return { error: 'PLUGIN_CORRUPT' };
     const code = substitutePlugin(template, layout, m.values);
-    return code === null ? { error: 'BAD_VALUES' } : { code };
+    // `sha256` is the hash of the packaged file this run executes (the
+    // code maps back to it byte for byte); the runner reports it (pluginHash.ts).
+    return code === null ? { error: 'BAD_VALUES' } : { code, sha256 };
   } catch {
     return { error: 'PLUGIN_UNAVAILABLE' };
   }

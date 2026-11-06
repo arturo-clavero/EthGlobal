@@ -1,5 +1,6 @@
 // Note: This file runs in page context, not extension context
 // We use console.log here intentionally as @tlsn/common may not be available
+import { installPageApi } from './pageApiLock';
 
 // Injected by webpack DefinePlugin from package.json
 declare const __EXTENSION_VERSION__: string;
@@ -123,8 +124,10 @@ class ExtensionAPI {
   }
 }
 
-// Expose API to the page
-(window as unknown as { tlsn: ExtensionAPI }).tlsn = new ExtensionAPI();
+// Expose API to the page. On an allowed origin (our
+// extension ID announced) window.tlsn stays ours whichever extension's page
+// script runs first (pageApiLock.ts); elsewhere assigned as upstream.
+installPageApi(window, new ExtensionAPI(), FORK_EXTENSION_ID !== null);
 
 // Dispatch event to notify page that extension is loaded
 window.dispatchEvent(new CustomEvent('tlsn_loaded'));
