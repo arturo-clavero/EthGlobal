@@ -1,6 +1,6 @@
 /**
  * A wrong account keeps the window open; a trusted plugin may send
- * its own window to GitHub's logout/login/account switcher (exact URLs) and tells the embedding page which login is signed in
+ * its own window to an allowlisted exact URL (configured at build time; here a neutral injected list) and tells the embedding page which login is signed in
  * (`account` progress, the login only). Scaffolding copied from pageProgress.test.ts, whose header follows.
  *
  * Progress of a trusted plugin for the embedding page, and nothing
@@ -22,6 +22,14 @@ import path from 'node:path';
 const hosts = vi.hoisted(
   () => [] as Array<{ capabilities: Map<string, (...a: any[]) => unknown> }>,
 );
+
+// The build-time list (webpack's __FORK_NAVIGATE_URLS__), injected before the module loads.
+const SWITCH = 'https://accounts.example.test/switch';
+const LOGOUT = 'https://accounts.example.test/logout';
+vi.hoisted(() => {
+  (globalThis as any).__FORK_NAVIGATE_URLS__ =
+    'https://accounts.example.test/switch, https://accounts.example.test/logout';
+});
 
 vi.mock('../../src/offscreen/ProveManager', () => ({
   ProveManager: class {
@@ -46,6 +54,7 @@ import { SessionManager } from '../../src/offscreen/SessionManager';
 import { sanitizePageProgress } from '../../src/constants/pageProgress';
 import {
   allowedNavigation,
+  parseNavigateUrls,
   pluginNavigateTarget,
   PLUGIN_NAVIGATE_URLS,
 } from '../../src/constants/pluginNavigate';
@@ -86,33 +95,63 @@ const NAV = {
   type: 'PLUGIN_NAVIGATE',
   requestId: 'req-1',
   windowId: 42,
-  url: 'https://github.com/logout',
+  url: SWITCH,
 };
 const OFFSCREEN_SENDER = { id: NAV_ID, url: OFFSCREEN };
 
 describe('navigate: the URL allowlist (exact, fail closed)', () => {
-  it('allows exactly logout, login and switch_account', () => {
-    expect([...PLUGIN_NAVIGATE_URLS].sort()).toEqual([
-      'https://github.com/login',
-      'https://github.com/logout',
-      'https://github.com/switch_account',
-    ]);
+  it('allows exactly the build-time list', () => {
+    expect([...PLUGIN_NAVIGATE_URLS].sort()).toEqual([LOGOUT, SWITCH]);
     for (const u of PLUGIN_NAVIGATE_URLS) expect(allowedNavigation(u)).toBe(u);
   });
 
+  it('the build-time list keeps exact https URLs only', () => {
+    expect(
+      parseNavigateUrls(
+        [
+          SWITCH,
+          SWITCH,
+          'http://accounts.example.test/switch',
+          'https://accounts.example.test/switch?next=/x',
+          'https://accounts.example.test/switch#x',
+          'https://user@accounts.example.test/switch',
+          'https://accounts.example.test',
+          'https://Accounts.example.test/switch',
+          'javascript:alert(1)',
+          'not a url',
+          '',
+        ].join(','),
+      ),
+    ).toEqual([SWITCH]);
+  });
+
+  it('no build-time list (the default): nothing is allowed, and the gate refuses', async () => {
+    vi.resetModules();
+    const saved = (globalThis as any).__FORK_NAVIGATE_URLS__;
+    delete (globalThis as any).__FORK_NAVIGATE_URLS__;
+    try {
+      const fresh = await import('../../src/constants/pluginNavigate');
+      expect(fresh.PLUGIN_NAVIGATE_URLS).toEqual([]);
+      expect(fresh.allowedNavigation(SWITCH)).toBeNull();
+      expect(fresh.pluginNavigateTarget(NAV, OFFSCREEN_SENDER, gate())).toBeNull();
+    } finally {
+      (globalThis as any).__FORK_NAVIGATE_URLS__ = saved;
+    }
+  });
+
   for (const url of [
-    'https://github.com/logout?return_to=https://evil.example',
-    'https://github.com/login?return_to=%2Fevil',
-    'https://github.com/logout/',
-    'https://github.com/logout#x',
-    'https://github.com/LOGOUT',
-    ' https://github.com/logout',
-    'http://github.com/logout',
-    'https://github.com.evil.example/logout',
-    'https://user@github.com/logout',
-    'https://gist.github.com/logout',
-    'https://github.com/',
-    'https://github.com/settings/tokens',
+    'https://accounts.example.test/switch?next=https://evil.example',
+    'https://accounts.example.test/logout?next=%2Fevil',
+    'https://accounts.example.test/switch/',
+    'https://accounts.example.test/switch#x',
+    'https://accounts.example.test/SWITCH',
+    ' https://accounts.example.test/switch',
+    'http://accounts.example.test/switch',
+    'https://accounts.example.test.evil.example/switch',
+    'https://user@accounts.example.test/switch',
+    'https://sub.accounts.example.test/switch',
+    'https://accounts.example.test/',
+    'https://accounts.example.test/settings',
     'https://evil.example/',
     'javascript:alert(1)',
     'chrome://extensions',
@@ -120,8 +159,8 @@ describe('navigate: the URL allowlist (exact, fail closed)', () => {
     null,
     undefined,
     42,
-    { toString: () => 'https://github.com/logout' },
-    ['https://github.com/logout'],
+    { toString: () => SWITCH },
+    [SWITCH],
   ] as unknown[]) {
     it(`refuses ${JSON.stringify(url) ?? String(url)}`, () => {
       expect(allowedNavigation(url)).toBeNull();
@@ -133,7 +172,7 @@ describe('navigate: the background gate', () => {
   it('our offscreen document + an auto-approved run + its managed window + an allowed URL → that tab', () => {
     expect(pluginNavigateTarget(NAV, OFFSCREEN_SENDER, gate())).toEqual({
       tabId: 99,
-      url: 'https://github.com/logout',
+      url: SWITCH,
     });
   });
 
@@ -156,7 +195,7 @@ describe('navigate: the background gate', () => {
     ['no requestId', { ...NAV, requestId: undefined }, OFFSCREEN_SENDER, gate()],
     [
       'a URL off the list',
-      { ...NAV, url: 'https://github.com/settings' },
+      { ...NAV, url: 'https://accounts.example.test/settings' },
       OFFSCREEN_SENDER,
       gate(),
     ],
@@ -185,8 +224,8 @@ describe('navigate: who gets the capability', () => {
     const caps = capabilitiesFor(offscreenSessionDataFor(runRequest(), topFrame(ALLOWED_PAGE)));
     const navigate = caps.get('navigate');
     expect(navigate).toBeTypeOf('function');
-    expect(navigate!('https://github.com/logout')).toBe(true);
-    expect(navigate!('https://github.com/logout?return_to=/x')).toBe(false);
+    expect(navigate!(SWITCH)).toBe(true);
+    expect(navigate!(`${SWITCH}?next=/x`)).toBe(false);
     expect(navigate!('https://evil.example/')).toBe(false);
     await Promise.resolve();
     expect(sent).toEqual([
@@ -194,7 +233,7 @@ describe('navigate: who gets the capability', () => {
         type: 'PLUGIN_NAVIGATE',
         requestId: 'req-1',
         windowId: 42,
-        url: 'https://github.com/logout',
+        url: SWITCH,
       },
     ]);
   });

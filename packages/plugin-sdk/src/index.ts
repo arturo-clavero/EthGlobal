@@ -162,7 +162,7 @@ const usePluginTimeout = env.usePluginTimeout;
 // pages (extension SessionManager); undefined elsewhere.
 const reportProgress = env.reportProgress;
 // Auto-approved plugins only; sends the run's own
-// window to GitHub's logout/login/account switcher (exact URLs). Undefined elsewhere.
+// window to an allowlisted exact URL (configured at build time). Undefined elsewhere.
 const navigate = env.navigate;
 const collectAwsPrivate = env.collectAwsPrivate;
 ${processedCode};

@@ -49,7 +49,8 @@ test('package captures AWS early and the production guard limits the regional wi
   assert.deepEqual(manifest.content_scripts[1].js, manifest.content_scripts[0].js);
   for (const host of [...consoleHosts, 'https://iam.amazonaws.com/*', 'https://cloudtrail.us-east-1.amazonaws.com/*'])
     assert(manifest.host_permissions.includes(host));
-  for (const host of ['https://github.com/*', 'https://accounts.google.com/*', 'https://console.cloud.google.com/*',
+  assert(!JSON.stringify([manifest.host_permissions, manifest.content_scripts, manifest.web_accessible_resources]).includes('github.com'));
+  for (const host of ['https://accounts.google.com/*', 'https://console.cloud.google.com/*',
     'https://cloudconsole-pa.clients6.google.com/*', 'https://logging.clients6.google.com/*', 'https://app.example.com/*'])
     assert(manifest.content_scripts[0].matches.includes(host));
   for (const host of consoleHosts) assert(manifest.web_accessible_resources[0].matches.includes(host));
@@ -89,4 +90,15 @@ test('FORK_KEY_FILE pins the key and the derived extension id; FORK_ICON_DIR rep
 
 test('refuses a page bridge whose version differs from the manifest', t => {
   assert.throws(() => fixture(t, { EXT_VERSION: '0.1.0.1502' }), /page bridge version/);
+});
+
+test('FORK_EXTRA_HOSTS adds exact https match patterns to host access, content scripts and resources', t => {
+  const extra = 'https://accounts.example.test/*';
+  const { manifest } = fixture(t, { EXTRA_HOSTS: extra });
+  assert(manifest.host_permissions.includes(extra));
+  assert(manifest.content_scripts[0].matches.includes(extra));
+  assert(manifest.web_accessible_resources[0].matches.includes(extra));
+  for (const bad of ['<all_urls>', 'https://*/*', 'https://*.example.test/*', 'http://accounts.example.test/*',
+    '*://accounts.example.test/*', 'https://accounts.example.test'])
+    assert.throws(() => fixture(t, { EXTRA_HOSTS: bad }), /extra host is not/);
 });

@@ -22,7 +22,7 @@ function emitter() {
 const PLUGIN = `
 export const config = { name: 'Navigate probe' };
 export function main() {
-  if (typeof navigate === 'function') navigate('https://github.com/logout');
+  if (typeof navigate === 'function') navigate('https://accounts.example.test/switch');
   done(typeof navigate);
   return div({}, ['x']);
 }
@@ -43,7 +43,7 @@ describe('navigate capability', () => {
     host.addCapability('navigate', spy);
     const result = await host.executePlugin(PLUGIN, { eventEmitter: emitter() });
     expect(result).toBe('function');
-    expect(spy).toHaveBeenCalledWith('https://github.com/logout');
+    expect(spy).toHaveBeenCalledWith('https://accounts.example.test/switch');
   }, 15_000);
 
   it('without it (stock behaviour): typeof navigate is undefined and the plugin runs as before', async () => {

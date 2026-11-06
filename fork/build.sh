@@ -14,6 +14,10 @@
 #                         (dev default: http://localhost:5173, http://127.0.0.1:5173 and the same on port 5175)
 #   FORK_PLUGIN_DIR       directory of built plugin bundles <id>.js, packaged as the extension's built-in plugins
 #                         (the only plugin code it runs); without it the extension has none
+#   FORK_NAVIGATE_URLS    comma-separated exact https URLs (no query or fragment) a trusted plugin may send its own
+#                         window to (e.g. an account switcher); default none
+#   FORK_EXTRA_HOSTS      comma-separated extra host match patterns (https://host/path*) for content scripts and
+#                         host access, e.g. for those navigation targets; default none
 #   GCP_NOIR_NARGO        the pinned Noir compiler (default: nargo on PATH)
 # One heavy step at a time: npm ci only where node_modules is missing.
 set -euo pipefail
@@ -60,6 +64,21 @@ else
   done
 fi
 export FORK_PRODUCT_ORIGINS="$PRODUCT_ORIGINS"
+# Navigation targets and extra hosts are checked here, before the heavy steps (the manifest step checks hosts again).
+export FORK_NAVIGATE_URLS="${FORK_NAVIGATE_URLS:-}"
+if [ -n "$FORK_NAVIGATE_URLS" ]; then
+  IFS=',' read -ra _urls <<<"$FORK_NAVIGATE_URLS"
+  for u in "${_urls[@]}"; do
+    [[ "$u" =~ ^https://[a-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~/%-]*$ ]] || { echo "FORK_NAVIGATE_URLS entry must be an exact https URL without query or fragment: '$u'" >&2; exit 1; }
+  done
+fi
+EXTRA_HOSTS="${FORK_EXTRA_HOSTS:-}"
+if [ -n "$EXTRA_HOSTS" ]; then
+  IFS=',' read -ra _hosts <<<"$EXTRA_HOSTS"
+  for h in "${_hosts[@]}"; do
+    [[ "$h" =~ ^https://[a-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~/%*-]*$ ]] || { echo "FORK_EXTRA_HOSTS entry must be a match pattern https://host/path: '$h'" >&2; exit 1; }
+  done
+fi
 PLUGIN_DIR=""
 if [ -n "${FORK_PLUGIN_DIR:-}" ]; then
   PLUGIN_DIR="$(realpath "$FORK_PLUGIN_DIR")"
@@ -146,7 +165,7 @@ node --no-warnings "$HERE/third-party-notices.mts" --modules "$WORK/bundled-modu
   --out "$OUT/extension/THIRD_PARTY_NOTICES.txt"
 [ -s "$OUT/extension/THIRD_PARTY_NOTICES.txt" ] || { echo "no THIRD_PARTY_NOTICES.txt in the extension: refusing to build" >&2; exit 1; }
 rm -f "$OUT/extension-id.txt"
-PRODUCT_ORIGINS="$PRODUCT_ORIGINS" EXT_VERSION="$EXT_VERSION" KEY_FILE="$KEY_FILE" ICONS="${ICON_DIR:+1}" NAME="$NAME" DESCRIPTION="$DESCRIPTION" OUT="$OUT" node -e '
+PRODUCT_ORIGINS="$PRODUCT_ORIGINS" EXTRA_HOSTS="$EXTRA_HOSTS" EXT_VERSION="$EXT_VERSION" KEY_FILE="$KEY_FILE" ICONS="${ICON_DIR:+1}" NAME="$NAME" DESCRIPTION="$DESCRIPTION" OUT="$OUT" node -e '
 const fs = require("fs"), crypto = require("crypto");
 const p = process.env.OUT + "/extension/manifest.json";
 const m = JSON.parse(fs.readFileSync(p, "utf8"));
@@ -166,17 +185,21 @@ const expected = ["offscreen", "webRequest"];
 if (JSON.stringify([...m.permissions].sort()) !== JSON.stringify(expected))
   throw new Error("unexpected manifest permissions " + JSON.stringify(m.permissions) + " (expected " + JSON.stringify(expected) + ")");
 if (process.env.ICONS === "1") m.icons = { "16": "icon-16.png", "48": "icon-48.png", "128": "icon-128.png" };
-// Host access covers supported provider windows and product origins (the page API). The verifier and proxy are
-// reached by WebSocket from the offscreen document, which needs no host permission, so no verifier host is listed.
+// Host access covers the cloud provider windows, product origins (the page API) and optional FORK_EXTRA_HOSTS. The
+// verifier and proxy are reached by WebSocket from the offscreen document, which needs no host permission, so no
+// verifier host is listed.
 // The AWS console region is fixed: the AWS private proof binds this region in its collection and circuits.
-const GITHUB = ["https://github.com/*"];
 const GCP = ["https://accounts.google.com/*", "https://console.cloud.google.com/*", "https://cloudconsole-pa.clients6.google.com/*", "https://logging.clients6.google.com/*"];
 const AWS_CONSOLE = ["https://ap-southeast-2.console.aws.amazon.com/*", "https://*.ap-southeast-2.console.aws.amazon.com/*"];
 const product = process.env.PRODUCT_ORIGINS.split(",").map((o) => {
   if (!/^https?:\/\/[a-z0-9.-]+(:[0-9]+)?$/.test(o)) throw new Error("product origin is not scheme://host[:port]: " + o);
   return o + "/*";
 });
-const hosts = [...new Set([...GITHUB, ...GCP, ...product])];
+const extra = (process.env.EXTRA_HOSTS || "").split(",").filter(Boolean).map((h) => {
+  if (!/^https:\/\/[a-z0-9.-]+(:[0-9]+)?\/[A-Za-z0-9._~\/%*-]*$/.test(h)) throw new Error("extra host is not https://host/path: " + h);
+  return h;
+});
+const hosts = [...new Set([...GCP, ...product, ...extra])];
 m.host_permissions = [...hosts, ...AWS_CONSOLE, "https://iam.amazonaws.com/*", "https://cloudtrail.us-east-1.amazonaws.com/*"];
 if (m.content_scripts.length !== 1 || m.web_accessible_resources.length !== 1)
   throw new Error("upstream manifest changed: expected one content_scripts and one web_accessible_resources entry");

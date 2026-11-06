@@ -22,7 +22,7 @@
  *   carries `FORK_API_MARK`, so it goes in through the same setter and the
  *   newest one wins, without redefining the locked property.
  *
- * Elsewhere (e.g. github.com, where the page API is not needed) `window.tlsn` is
+ * Elsewhere (provider sites, where the page API is not needed) `window.tlsn` is
  * assigned exactly as upstream does, so the stock extension keeps working there.
  *
  * Not a security boundary: any main-world script can still wrap or replace the

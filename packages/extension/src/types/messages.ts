@@ -36,7 +36,7 @@ export type BackgroundMessage =
     }
   // Offscreen → background, auto-approved runs only.
   | { type: 'PLUGIN_PROGRESS'; requestId: string; progress: unknown }
-  // Offscreen → background, auto-approved runs only (exact GitHub URLs).
+  // Offscreen → background, auto-approved runs only (the run's own window to an allowlisted exact URL, configured at build time).
   | { type: 'PLUGIN_NAVIGATE'; requestId: string; windowId: number; url: string }
   // Content script → background. Names one of
   // the extension's built-in plugins (id + fingerprint) and the run's values; no
