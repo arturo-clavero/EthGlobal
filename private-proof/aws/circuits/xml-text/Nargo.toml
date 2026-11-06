@@ -1,0 +1,6 @@
+[package]
+name = "aws_private_xml_text"
+type = "bin"
+
+[dependencies]
+gcp_private_json = { path = "../../../gcp/circuits/lib" }
