@@ -1,9 +1,12 @@
 import browser from 'webextension-polyfill';
 import { WindowManager } from '../../background/WindowManager';
+// The PLUGIN_NAVIGATE gate (kept apart from the helper set's import lines).
+import { pluginNavigateTarget } from '../../constants/pluginNavigate';
 import { confirmationManager } from '../../background/ConfirmationManager';
 import type { PluginConfig } from '@tlsn/plugin-sdk';
 import type { InterceptedRequest, InterceptedRequestHeader } from '../../types/window-manager';
 import { validateUrl } from '../../utils/url-validator';
+import { autoApprovalFor } from '../../background/autoApproval';
 import { logger } from '@tlsn/common';
 import { getStoredLogLevel } from '../../utils/logLevelStorage';
 import type { ApprovalMode, BackgroundMessage } from '../../types/messages';
@@ -22,7 +25,10 @@ const windowManager = new WindowManager();
 // Track requestId → tabId for routing progress events back to the originating tab.
 // Entries have a TTL to prevent leaks if the offscreen document crashes before cleanup.
 const PROGRESS_ROUTE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const progressRoutes: Map<string, { tabId: number; createdAt: number }> = new Map();
+// `pageProgress` marks a route whose run was
+// auto-approved (a trusted plugin on an allowed origin); only those get PLUGIN_PROGRESS.
+const progressRoutes: Map<string, { tabId: number; createdAt: number; pageProgress?: boolean }> =
+  new Map();
 
 // Handle extension install/update
 browser.runtime.onInstalled.addListener((details) => {
@@ -163,6 +169,44 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
     return; // No response needed
   }
 
+  // A trusted plugin's progress → the tab that started
+  // the run, only when that run was auto-approved. The fields were checked
+  // where the report was made (offscreen) and are checked again where it is
+  // posted to the page (content script, allowed origins only).
+  // A trusted plugin's "Switch account" → its own window to
+  // GitHub's logout/login/switcher only (exact URLs), for an auto-approved run,
+  // from our offscreen document; any doubt refuses (constants/pluginNavigate.ts).
+  if (request.type === 'PLUGIN_NAVIGATE') {
+    const target = pluginNavigateTarget(request, sender, {
+      extensionId: browser.runtime.id,
+      offscreenUrl: browser.runtime.getURL('offscreen.html'),
+      isAutoApprovedRun: (requestId) => progressRoutes.get(requestId)?.pageProgress === true,
+      tabOfWindow: (windowId) => windowManager.getWindow(windowId)?.tabId,
+    });
+    if (!target) {
+      logger.warn('PLUGIN_NAVIGATE refused');
+      return Promise.resolve({ ok: false });
+    }
+    return browser.tabs
+      .update(target.tabId, { url: target.url })
+      .then(() => ({ ok: true }))
+      .catch(() => ({ ok: false }));
+  }
+
+  if (request.type === 'PLUGIN_PROGRESS') {
+    const route = progressRoutes.get(request.requestId);
+    if (route?.pageProgress) {
+      browser.tabs
+        .sendMessage(route.tabId, {
+          type: 'PLUGIN_PROGRESS',
+          requestId: request.requestId,
+          progress: request.progress,
+        })
+        .catch(() => {});
+    }
+    return; // No response needed
+  }
+
   // Relay: outbound MPC bytes from offscreen → originating tab (→ page → data channel)
   if (request.type === 'RELAY_OUT') {
     const route = progressRoutes.get(request.requestId);
@@ -228,15 +272,28 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
         // Step 2: Request user confirmation
         const confirmRequestId = `confirm_${Date.now()}_${Math.random()}`;
         let mode: ApprovalMode;
+        let autoApproved = false;
 
         try {
-          mode = await confirmationManager.requestConfirmation(
-            pluginConfig,
-            confirmRequestId,
-            executionCount,
-            sender.tab?.url,
-            request.code,
-          );
+          // An allowlisted plugin on an allowed
+          // origin runs without the prompt ("allow all" for this run); every
+          // other origin or plugin, and any error, gets the stock prompt.
+          const auto = await autoApprovalFor(request.code, sender, browser.runtime.id);
+          if (auto) {
+            logger.info(`Auto-approved a trusted plugin ${auto.plugin.id} on ${auto.origin}`);
+            mode = auto.mode;
+            autoApproved = true;
+            const route = request.requestId ? progressRoutes.get(request.requestId) : undefined;
+            if (route) route.pageProgress = true;
+          } else {
+            mode = await confirmationManager.requestConfirmation(
+              pluginConfig,
+              confirmRequestId,
+              executionCount,
+              sender.tab?.url,
+              request.code,
+            );
+          }
         } catch (confirmError) {
           logger.error('Confirmation error:', confirmError);
           return {
@@ -268,6 +325,9 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
             ...request.sessionData,
             _approvalMode: mode,
             _pluginHash: pluginHash,
+            // After the page's data, so a page
+            // cannot set it; SessionManager adds reportProgress only for '1'.
+            _autoApproved: autoApproved ? '1' : '0',
           },
         });
         logger.debug('EXEC_CODE_OFFSCREEN response:', response);

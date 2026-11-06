@@ -2,16 +2,26 @@ import browser from 'webextension-polyfill';
 import type { DomJson } from '@tlsn/plugin-sdk';
 import type { ContentMessage, ExecCodeResponse } from '../../types/messages';
 import { logger, LogLevel } from '@tlsn/common';
+import { isProductOrigin } from '../../constants/productOrigins';
+import { sanitizePageProgress } from '../../constants/pageProgress';
 
 // Initialize logger at DEBUG level for content scripts (no IndexedDB access)
 logger.init(LogLevel.DEBUG);
 logger.debug('Content script loaded on:', window.location.href);
+
+// Only allowed origins see our extension ID and get
+// helperStatus answers (constants/productOrigins.ts, build-time list).
+const PRODUCT_PAGE = isProductOrigin(window.location.origin);
 
 // Inject a script into the page if needed
 function injectScript() {
   const script = document.createElement('script');
   script.src = browser.runtime.getURL('content.bundle.js');
   script.type = 'text/javascript';
+  // The page script reads this as window.tlsn.extensionId
+  // (pages cannot see an extension's ID otherwise; the stock build sets none).
+  // Allowed origins only; elsewhere the fork looks like the stock build.
+  if (PRODUCT_PAGE) script.dataset.extensionId = browser.runtime.id;
   (document.head || document.documentElement).appendChild(script);
   script.onload = () => script.remove();
 }
@@ -202,6 +212,18 @@ browser.runtime.onMessage.addListener((msg: unknown) => {
       },
       window.location.origin,
     );
+    return; // No response needed
+  }
+
+  // A trusted plugin's progress, on allowed origins only.
+  if (request.type === 'PLUGIN_PROGRESS') {
+    const progress = sanitizePageProgress(request.progress);
+    if (PRODUCT_PAGE && progress && typeof request.requestId === 'string') {
+      window.postMessage(
+        { type: 'TLSN_PLUGIN_PROGRESS', requestId: request.requestId, ...progress },
+        window.location.origin,
+      );
+    }
     return; // No response needed
   }
 

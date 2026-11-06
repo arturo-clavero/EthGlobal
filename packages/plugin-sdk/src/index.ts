@@ -42,9 +42,19 @@ export function preprocessPluginCode(code: string): string {
 // QuickJS sandbox helpers
 // ---------------------------------------------------------------------------
 
+/** The part of the QuickJS context the wake-up uses. */
+type SandboxJobs = {
+  alive: boolean;
+  runtime: {
+    hasPendingJob(): boolean;
+    executePendingJobs(): { error?: { dispose(): void } };
+  };
+};
+
 async function createQuickJSSandbox(capabilities: Record<string, AnyFunction>): Promise<{
   eval: (code: string) => Promise<unknown>;
   dispose: () => void;
+  wake: () => void;
 }> {
   const { runSandboxed } = await loadQuickJs(variant);
 
@@ -56,11 +66,14 @@ async function createQuickJSSandbox(capabilities: Record<string, AnyFunction>): 
   };
 
   let evalCode: SandboxEvalCode | null = null;
+  // The QuickJS context, to run its queued jobs (wake).
+  let quickjsContext: SandboxJobs | null = null;
   let disposeCallback: (() => void) | null = null;
   let sandboxError: Error | null = null;
 
   const sandboxPromise = runSandboxed(async (sandbox) => {
     evalCode = sandbox.evalCode;
+    quickjsContext = sandbox.ctx;
 
     return new Promise<void>((resolve) => {
       disposeCallback = resolve;
@@ -98,7 +111,24 @@ async function createQuickJSSandbox(capabilities: Record<string, AnyFunction>): 
         disposeCallback();
         disposeCallback = null;
       }
+      quickjsContext = null;
       sandboxPromise.catch(() => {});
+    },
+    // Run the jobs (promise reactions) the plugin queued.
+    // The library runs them only during evaluation or when a host promise
+    // settles; HostCore calls this after main() and after a button handler.
+    // Bounded; a job that throws is consumed and its error handle freed. No-op
+    // once disposed.
+    wake: () => {
+      const ctx = quickjsContext;
+      for (
+        let i = 0;
+        i < 1000 && disposeCallback && ctx?.alive && ctx.runtime.hasPendingJob();
+        i++
+      ) {
+        const ran = ctx.runtime.executePendingJobs();
+        if (ran.error) ran.error.dispose();
+      }
     },
   };
 }
@@ -128,6 +158,12 @@ const closeWindow = env.closeWindow;
 const done = env.done;
 const doneWithOverlay = env.doneWithOverlay;
 const usePluginTimeout = env.usePluginTimeout;
+// Set only for auto-approved plugins on the embedding
+// pages (extension SessionManager); undefined elsewhere.
+const reportProgress = env.reportProgress;
+// Auto-approved plugins only; sends the run's own
+// window to GitHub's logout/login/account switcher (exact URLs). Undefined elsewhere.
+const navigate = env.navigate;
 ${processedCode};
 `;
 
@@ -136,6 +172,7 @@ ${processedCode};
         return {
           exports: (evalResult ?? {}) as Record<string, unknown>,
           dispose: sandbox.dispose,
+          wake: sandbox.wake,
         };
       } catch (err) {
         sandbox.dispose();

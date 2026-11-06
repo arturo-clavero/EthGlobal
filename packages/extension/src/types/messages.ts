@@ -34,6 +34,10 @@ export type BackgroundMessage =
       message: string;
       source: string;
     }
+  // Offscreen → background, auto-approved runs only.
+  | { type: 'PLUGIN_PROGRESS'; requestId: string; progress: unknown }
+  // Offscreen → background, auto-approved runs only (exact GitHub URLs).
+  | { type: 'PLUGIN_NAVIGATE'; requestId: string; windowId: number; url: string }
   | {
       type: 'EXEC_CODE';
       code: string;
@@ -66,6 +70,8 @@ export type ContentMessage =
       message: string;
       source: string;
     }
+  // Background → the run's own tab; posted to the page on allowed origins only.
+  | { type: 'PLUGIN_PROGRESS'; requestId: string; progress: unknown }
   | { type: 'GET_PAGE_INFO' }
   | { type: 'RENDER_PLUGIN_UI'; json: DomJson; windowId: number }
   | { type: 'RELAY_OUT'; requestId: string; data: string };

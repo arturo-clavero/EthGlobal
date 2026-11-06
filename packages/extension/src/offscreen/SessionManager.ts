@@ -27,6 +27,8 @@ interface ChromeRuntimeLike {
   };
 }
 import { validateProvePermission, validateOpenWindowPermission } from './permissionValidator';
+import { sanitizePageProgress } from '../constants/pageProgress';
+import { allowedNavigation } from '../constants/pluginNavigate';
 
 /** Maximum number of preview characters shown per reveal range. */
 const PREVIEW_MAX_CHARS = 256;
@@ -93,6 +95,7 @@ function makeDescriptor(
     action,
     algorithm,
     preview,
+    length: safeEnd - safeStart,
   };
 }
 
@@ -418,6 +421,7 @@ export class SessionManager {
 
         if (response?.type === 'WINDOW_OPENED' && response.payload?.windowId) {
           activeWindowId = response.payload.windowId;
+          this.runWindows.set(host, activeWindowId); // For navigate()
         }
 
         return response;
@@ -425,6 +429,54 @@ export class SessionManager {
     });
     hostRef = host;
     return host;
+  }
+
+  /**
+   * `reportProgress` only for a run the background
+   * auto-approved (an allowlisted plugin on an allowed-origin page; it writes
+   * _autoApproved after the page's sessionData) that the page can match (a
+   * requestId). Checked fields only (constants/pageProgress.ts). Other runs
+   * have no such capability.
+   */
+  private addPageProgress(
+    host: Host,
+    requestId: string | null,
+    execSessionData: Record<string, string> | null,
+  ): void {
+    if (execSessionData?._autoApproved !== '1' || !requestId) return;
+    host.addCapability('reportProgress', (raw: unknown) => {
+      const progress = sanitizePageProgress(raw);
+      if (!progress) return;
+      SessionManager.getChromeRuntime()
+        .sendMessage({ type: 'PLUGIN_PROGRESS', requestId, progress })
+        .catch((err: unknown) => logger.warn('[SessionManager] reportProgress failed:', err));
+    });
+  }
+
+  /** The window each run opened (navigate() may only move that one). */
+  private runWindows = new WeakMap<Host, number>();
+
+  /**
+   * `navigate(url)` sends the run's own window to GitHub's
+   * logout/login/account switcher (constants/pluginNavigate.ts, exact URLs) so a wrong account can be switched without
+   * leaving the run. Only for a run the background auto-approved (as reportProgress) with a requestId (the background
+   * finds the run by it and checks it again). Returns false when refused; never throws into the plugin.
+   */
+  private addNavigate(
+    host: Host,
+    requestId: string | null,
+    execSessionData: Record<string, string> | null,
+  ): void {
+    if (execSessionData?._autoApproved !== '1' || !requestId) return;
+    host.addCapability('navigate', (raw: unknown) => {
+      const url = allowedNavigation(raw);
+      const windowId = this.runWindows.get(host);
+      if (!url || !windowId) return false;
+      SessionManager.getChromeRuntime()
+        .sendMessage({ type: 'PLUGIN_NAVIGATE', requestId, windowId, url })
+        .catch((err: unknown) => logger.warn('[SessionManager] navigate failed:', err));
+      return true;
+    });
   }
 
   async awaitInit(): Promise<SessionManager> {
@@ -450,6 +502,8 @@ export class SessionManager {
 
     // Create a per-execution Host with callbacks that close over this execution's state
     const host = this.createExecutionHost(pluginConfig, execRequestId, sessionData || null);
+    this.addPageProgress(host, execRequestId, sessionData || null);
+    this.addNavigate(host, execRequestId, sessionData || null);
 
     // Wrap the plugin's event listener so it does NOT return a Promise to
     // Chrome's messaging API. The plugin listener (makeOpenWindow's onMessage)
