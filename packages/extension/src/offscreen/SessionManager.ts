@@ -20,6 +20,8 @@ import { logger, bytesToBase64, base64ToBytes } from '@tlsn/common';
  * callback signatures that conflict with our simplified listeners.
  */
 interface ChromeRuntimeLike {
+  id?: string;
+  getURL?: (path: string) => string;
   sendMessage: (message: unknown) => Promise<unknown>;
   onMessage: {
     addListener: (listener: (...args: unknown[]) => void) => void;
@@ -30,6 +32,9 @@ import { validateProvePermission, validateOpenWindowPermission } from './permiss
 import { sanitizePageProgress } from '../constants/pageProgress';
 import { allowedNavigation } from '../constants/pluginNavigate';
 import { proveSessionData } from './pluginHash';
+import { GcpPrivateWitnessRun, clearGcpOpenings } from './gcpPrivateWitness';
+import type { GcpPrivateProofModule } from './gcpPrivateWitness';
+import type { RevealOutput } from 'tlsn-wasm';
 
 /** Maximum number of preview characters shown per reveal range. */
 const PREVIEW_MAX_CHARS = 256;
@@ -153,6 +158,7 @@ export class SessionManager {
     pluginConfig: PluginConfig | null,
     requestId: string | null,
     execSessionData: Record<string, string> | null,
+    privateRun?: GcpPrivateWitnessRun,
   ): Host {
     const proveManager = this.proveManager;
     let hostRef: Host | null = null;
@@ -236,6 +242,12 @@ export class SessionManager {
         // supports both: in Proxy mode the verifier browser opens the server TCP
         // (through its own proxy) and the prover tunnels through the verifier.
         const mode = (sessionData.mode as 'Mpc' | 'Proxy') ?? 'Mpc';
+        if (privateRun && [proverOptions.maxSentData ?? 4096, proverOptions.maxRecvData ?? 16384]
+          .some(limit => !Number.isSafeInteger(limit) || limit <= 0 || limit > 16384)) {
+          throw new Error('GCP_PRIVATE_PROOF_INVALID');
+        }
+        privateRun?.begin(sessionData, url.hostname, isRelay);
+        let privateOpenings: RevealOutput | undefined;
         const modeLabel = isRelay ? `relay (${mode})` : mode === 'Proxy' ? 'Proxy' : 'MPC';
         logger.debug('[SessionManager] Prove mode:', mode, 'relay:', isRelay);
 
@@ -269,7 +281,10 @@ export class SessionManager {
               proverOptions.maxSentData,
               sessionData,
               mode,
-            );
+            ).catch(error => {
+              if (privateRun) throw new Error('GCP_PRIVATE_PROOF_FAILED');
+              throw error;
+            });
 
         // Register per-prover WASM progress callback
         if (requestId) {
@@ -305,12 +320,16 @@ export class SessionManager {
           // Compute reveal ranges via WASM (parses HTTP transcripts + maps handlers to byte ranges)
           emitBoth('PROCESSING_TRANSCRIPT', 0.5, 'Processing transcript...');
           const { sentRanges, recvRanges, sentRangesWithHandlers, recvRangesWithHandlers, commit } =
-            await proveManager.computeReveal(proverId, proverOptions.handlers);
+            privateRun ? await privateRun.selectRanges(
+              proveManager.getSessionId(proverId), url.hostname,
+              proveManager.getSentBytes(proverId), proveManager.getRecvBytes(proverId),
+              () => proveManager.computeReveal(proverId, proverOptions.handlers),
+            ) : await proveManager.computeReveal(proverId, proverOptions.handlers);
 
-          logger.debug('sentRanges', sentRanges);
-          logger.debug('recvRanges', recvRanges);
-          if (commit) {
-            logger.debug('commitRanges', commit);
+          if (!privateRun) {
+            logger.debug('sentRanges', sentRanges);
+            logger.debug('recvRanges', recvRanges);
+            if (commit) logger.debug('commitRanges', commit);
           }
 
           // Approval gate: in any mode other than 'all-session', show the user
@@ -366,9 +385,7 @@ export class SessionManager {
             { sent: sentRanges, recv: recvRanges },
             commit,
           );
-          if (commit) {
-            logger.debug('reveal openings', openings);
-          }
+          if (privateRun) privateOpenings = openings;
 
           // Get structured response from verifier. In relay mode the result lives
           // on the verifying browser (its own verify() output) — there is no
@@ -380,8 +397,23 @@ export class SessionManager {
 
           emitBoth('COMPLETE', 1.0, 'Complete');
 
+          if (privateRun) return await privateRun.accept(
+            proveManager.getSessionId(proverId), url.hostname,
+            proveManager.getSentBytes(proverId), proveManager.getRecvBytes(proverId), openings, response,
+          );
           return response;
+        } catch (error) {
+          if (privateRun) {
+            privateRun.clear();
+            throw new Error('GCP_PRIVATE_PROOF_FAILED');
+          }
+          throw error;
         } finally {
+          if (privateRun) {
+            clearGcpOpenings(privateOpenings);
+            proveManager.getSentBytes(proverId).fill(0);
+            proveManager.getRecvBytes(proverId).fill(0);
+          }
           // Always clean up prover resources to prevent memory leaks
           await proveManager.cleanupProver(proverId);
         }
@@ -398,6 +430,8 @@ export class SessionManager {
         });
       },
       onCloseWindow: (windowId: number) => {
+        // SDK done() closes immediately; private proving still needs its cancel window.
+        if (privateRun) return Promise.resolve(undefined);
         const chromeRuntime = SessionManager.getChromeRuntime();
         logger.debug('onCloseWindow', windowId);
         return chromeRuntime.sendMessage({
@@ -490,6 +524,8 @@ export class SessionManager {
     code: string,
     requestId?: string,
     sessionData?: Record<string, string>,
+    // Supplied only by a compiled offscreen caller after prepareBuiltInRun(), never a message field.
+    privateProof?: GcpPrivateProofModule,
   ): Promise<unknown> {
     const chromeRuntime = SessionManager.getChromeRuntime();
     if (!chromeRuntime.onMessage) {
@@ -500,10 +536,11 @@ export class SessionManager {
 
     // Extract plugin config for permission validation (scoped to this execution)
     const pluginConfig = await this.extractConfig(code);
-    logger.debug('[SessionManager] Extracted plugin config:', pluginConfig);
+    if (!privateProof) logger.debug('[SessionManager] Extracted plugin config:', pluginConfig);
 
     // Create a per-execution Host with callbacks that close over this execution's state
-    const host = this.createExecutionHost(pluginConfig, execRequestId, sessionData || null);
+    const privateRun = privateProof ? new GcpPrivateWitnessRun(sessionData || {}, execRequestId, privateProof) : undefined;
+    const host = this.createExecutionHost(pluginConfig, execRequestId, sessionData || null, privateRun);
     this.addPageProgress(host, execRequestId, sessionData || null);
     this.addNavigate(host, execRequestId, sessionData || null);
 
@@ -517,30 +554,57 @@ export class SessionManager {
       (message: WindowMessage) => void,
       (message: unknown) => void
     >();
+    // SDK done() ends its window listener before local ZK proving finishes.
+    // Keep cancellation scoped to this run's real window through the final proof.
+    const cancelPrivateOnClose = (raw: unknown, source: unknown) => {
+      if (!privateRun || !chromeRuntime.id || !chromeRuntime.getURL || !raw || typeof raw !== 'object' ||
+          !source || typeof source !== 'object') return;
+      const message = raw as { type?: unknown; windowId?: unknown };
+      const sender = source as { id?: unknown; url?: unknown; tab?: unknown };
+      if (message.type === 'WINDOW_CLOSED' && typeof message.windowId === 'number' &&
+          message.windowId === this.runWindows.get(host) && sender.id === chromeRuntime.id && sender.tab === undefined &&
+          (sender.url === undefined || sender.url === chromeRuntime.getURL('background.bundle.js'))) privateRun.clear();
+    };
+    if (privateRun) chromeRuntime.onMessage.addListener(cancelPrivateOnClose);
 
-    return host.executePlugin(code, {
-      eventEmitter: {
-        addListener: (listener: (message: WindowMessage) => void) => {
-          const wrapper = (message: unknown) => {
-            // Fire-and-forget: don't return the Promise so Chrome doesn't
-            // treat it as a messaging response.
-            listener(message as WindowMessage);
-          };
-          listenerWrappers.set(listener, wrapper);
-          chromeRuntime.onMessage.addListener(wrapper);
+    try {
+      const result = await host.executePlugin(code, {
+        eventEmitter: {
+          addListener: (listener: (message: WindowMessage) => void) => {
+            const wrapper = (message: unknown) => {
+              // Fire-and-forget: don't return the Promise so Chrome doesn't
+              // treat it as a messaging response.
+              listener(message as WindowMessage);
+            };
+            listenerWrappers.set(listener, wrapper);
+            chromeRuntime.onMessage.addListener(wrapper);
+          },
+          removeListener: (listener: (message: WindowMessage) => void) => {
+            const wrapper = listenerWrappers.get(listener);
+            if (wrapper) {
+              chromeRuntime.onMessage.removeListener(wrapper);
+              listenerWrappers.delete(listener);
+            }
+          },
+          emit: (message: WindowMessage) => {
+            chromeRuntime.sendMessage(message);
+          },
         },
-        removeListener: (listener: (message: WindowMessage) => void) => {
-          const wrapper = listenerWrappers.get(listener);
-          if (wrapper) {
-            chromeRuntime.onMessage.removeListener(wrapper);
-            listenerWrappers.delete(listener);
-          }
-        },
-        emit: (message: WindowMessage) => {
-          chromeRuntime.sendMessage(message);
-        },
-      },
-    });
+      });
+      // Ignore done() data for private runs: only the compiled proof module may cross the page boundary.
+      return privateRun ? await privateRun.finish() : result;
+    } catch (error) {
+      if (privateRun) throw new Error('GCP_PRIVATE_PROOF_FAILED');
+      throw error;
+    } finally {
+      if (privateRun) chromeRuntime.onMessage.removeListener(cancelPrivateOnClose);
+      privateRun?.clear();
+      const windowId = privateRun ? this.runWindows.get(host) : undefined;
+      if (windowId !== undefined) {
+        this.runWindows.delete(host);
+        await chromeRuntime.sendMessage({ type: 'CLOSE_WINDOW', windowId }).catch(() => {});
+      }
+    }
   }
 
   /**
