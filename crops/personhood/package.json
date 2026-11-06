@@ -1,0 +1,25 @@
+{
+  "name": "@tlsn-fork/personhood",
+  "version": "0.1.0",
+  "description": "Optional World ID one-human-per-job gate bound to a proof-bundle commitment",
+  "type": "module",
+  "license": "MIT OR Apache-2.0",
+  "exports": {
+    ".": "./index.mjs",
+    "./client": "./client.mjs",
+    "./server": "./server.mjs"
+  },
+  "files": [
+    "*.mjs",
+    "!*.test.mjs"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1"
+  },
+  "dependencies": {
+    "@worldcoin/idkit-core": "4.6.0"
+  }
+}
