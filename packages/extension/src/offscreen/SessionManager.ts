@@ -33,6 +33,7 @@ import { sanitizePageProgress } from '../constants/pageProgress';
 import { allowedNavigation } from '../constants/pluginNavigate';
 import { proveSessionData } from './pluginHash';
 import { GcpPrivateWitnessRun, PrivateWitnessRun, clearGcpOpenings } from './gcpPrivateWitness';
+import { gcpPrivateProgress } from './gcpPrivateProgress';
 import type { GcpPrivateProofModule } from './gcpPrivateWitness';
 import { AwsPrivateWitnessRun } from './awsPrivateWitness';
 import type { AwsCapture } from '../aws-private/browser-client.mjs';
@@ -112,6 +113,11 @@ export class SessionManager {
   private configHost: Host;
   private proveManager: ProveManager;
   private initPromise: Promise<void>;
+  private gcpProgress = new Map<string, (completed: number) => void>();
+
+  updateGcpProofProgress(requestId: string, completed: number): void {
+    if (Number.isInteger(completed) && completed >= 0 && completed <= 128) this.gcpProgress.get(requestId)?.(completed);
+  }
 
   constructor() {
     // Lightweight Host for config extraction only (no execution-scoped state)
@@ -576,6 +582,7 @@ export class SessionManager {
           (sender.url === undefined || sender.url === chromeRuntime.getURL('background.bundle.js'))) privateRun.clear();
     };
     if (privateRun) chromeRuntime.onMessage.addListener(cancelPrivateOnClose);
+    let progressTimer: ReturnType<typeof setInterval> | undefined;
 
     try {
       const result = await host.executePlugin(code, {
@@ -603,11 +610,29 @@ export class SessionManager {
       });
       // Ignore done() data for private runs: only the compiled proof module may cross the page boundary.
       if (privateRun) this.proveManager.releaseIdleWorker();
+      if (privateRun instanceof GcpPrivateWitnessRun && execRequestId) {
+        const started = Date.now();
+        let completed = 0, lastProgress = started;
+        const render = () => {
+          const windowId = this.runWindows.get(host);
+          if (windowId === undefined) return;
+          try { host.renderUi(windowId, gcpPrivateProgress(completed, Math.floor((Date.now() - started) / 1000),
+            Math.floor((Date.now() - lastProgress) / 1000))); } catch { /* Display failures must not interrupt proving. */ }
+        };
+        this.gcpProgress.set(execRequestId, count => {
+          if (count > completed) { completed = count; lastProgress = Date.now(); }
+          render();
+        });
+        render();
+        progressTimer = setInterval(render, 1000);
+      }
       return privateRun ? await privateRun.finish() : result;
     } catch (error) {
       if (privateRun) throw new Error('GCP_PRIVATE_PROOF_FAILED');
       throw error;
     } finally {
+      clearInterval(progressTimer);
+      if (execRequestId) this.gcpProgress.delete(execRequestId);
       if (privateRun) chromeRuntime.onMessage.removeListener(cancelPrivateOnClose);
       privateRun?.clear();
       const windowId = privateRun ? this.runWindows.get(host) : undefined;

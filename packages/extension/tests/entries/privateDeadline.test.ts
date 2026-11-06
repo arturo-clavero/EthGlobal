@@ -7,7 +7,8 @@ vi.mock('@tlsn/common', () => ({ LogLevel: { DEBUG: 0 }, logger: { init: vi.fn()
 
 it('keeps the real AWS page bridge alive past five minutes and expires AWS/GCP at their own deadlines', async () => {
   vi.useFakeTimers();
-  vi.mocked(browser.runtime.sendMessage).mockResolvedValue({ success: true, pending: true });
+  vi.mocked(browser.runtime.sendMessage).mockImplementation(async message =>
+    message.type === 'PING' ? { type: 'PONG' } : { success: true, pending: true });
   const listeners = vi.spyOn(window, 'addEventListener');
   const replies = vi.spyOn(window, 'postMessage').mockImplementation(() => {});
   vi.spyOn(document.head, 'appendChild').mockImplementation(node => node);
@@ -20,7 +21,12 @@ it('keeps the real AWS page bridge alive past five minutes and expires AWS/GCP a
       handler(new MessageEvent('message', { source: window, origin: window.location.origin,
         data: { type: 'TLSN_RUN_BUILTIN', payload: { pluginId, requestId } } }));
     }
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(replies.mock.calls.map(([message]) => message)).toEqual([
+      { type: 'TLSN_RUN_BUILTIN_ACK', requestId: 'aws-run' },
+      { type: 'TLSN_RUN_BUILTIN_ACK', requestId: 'gcp-run' },
+    ]);
+    replies.mockClear();
     vi.advanceTimersByTime(5 * 60 * 1000);
     expect(replies).not.toHaveBeenCalled();
     // GCP's route lifetime is thirteen minutes, longer than AWS's twelve,
@@ -32,6 +38,33 @@ it('keeps the real AWS page bridge alive past five minutes and expires AWS/GCP a
       { type: 'TLSN_RUN_BUILTIN_RESPONSE', requestId: 'aws-run', success: false, error: 'AWS_PRIVATE_PROVING_FAILED' },
       { type: 'TLSN_RUN_BUILTIN_RESPONSE', requestId: 'gcp-run', success: false, error: 'GCP_PRIVATE_PROVING_FAILED' },
     ]);
+  } finally {
+    if (handler) window.removeEventListener('message', handler);
+    vi.useRealTimers(); vi.restoreAllMocks();
+  }
+});
+
+it('reports an invalidated Chrome context before acknowledging a private run', async () => {
+  vi.resetModules();
+  vi.useFakeTimers();
+  vi.mocked(browser.runtime.sendMessage).mockImplementation(message => {
+    if (message.type === 'PING') throw new Error('Extension context invalidated.');
+    return Promise.resolve(undefined);
+  });
+  const listeners = vi.spyOn(window, 'addEventListener');
+  const replies = vi.spyOn(window, 'postMessage').mockImplementation(() => {});
+  vi.spyOn(document.head, 'appendChild').mockImplementation(node => node);
+  let handler: EventListener | undefined;
+  try {
+    await import('../../src/entries/Content/index');
+    handler = listeners.mock.calls.find(([type]) => type === 'message')?.[1] as EventListener;
+    handler(new MessageEvent('message', { source: window, origin: window.location.origin,
+      data: { type: 'TLSN_RUN_BUILTIN', payload: { pluginId: 'gcp-work', requestId: 'gcp-run' } } }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(replies.mock.calls.map(([message]) => message)).toEqual([
+      { type: 'TLSN_RUN_BUILTIN_RESPONSE', requestId: 'gcp-run', success: false, error: 'EXTENSION_CONNECTION_LOST' },
+    ]);
+    expect(vi.getTimerCount()).toBe(0);
   } finally {
     if (handler) window.removeEventListener('message', handler);
     vi.useRealTimers(); vi.restoreAllMocks();

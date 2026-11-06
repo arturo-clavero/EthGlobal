@@ -13,6 +13,7 @@ vi.mock('@tlsn/plugin-sdk', () => ({ canonicalizeHandler: (h: unknown) => h,
     constructor(readonly opts: any) { state.hosts.push(opts); }
     getPluginConfig() { return {}; }
     addCapability() {}
+    renderUi(windowId: number, json: unknown) { this.opts.onRenderPluginUi(windowId, json); }
     async executePlugin() {
       if (state.openWindow) await this.opts.onOpenWindow('https://accounts.google.com');
       for (let i = 0; i < (state.aws ? 2 : 6); i++) {
@@ -79,6 +80,36 @@ beforeEach(() => {
 });
 
 describe('SessionManager private GCP capability', () => {
+  it('shows real proof counts and elapsed time only for the active run, then removes its display timer', async () => {
+    vi.useFakeTimers();
+    try {
+      state.openWindow = true;
+      const manager = new SessionManager();
+      const displays = () => vi.mocked(chrome.runtime.sendMessage).mock.calls.map(([m]) => m as any).filter(m => m.type === 'RENDER_PLUGIN_UI');
+      await manager.executePlugin('packaged code', runData.proofId, { ...runData, _approvalMode: 'all-session' }, {
+        identityEmail: () => 'candidate@example.test',
+        prove: async () => {
+          expect(JSON.stringify(displays().at(-1))).toContain('0 proof parts completed');
+          manager.updateGcpProofProgress('other-run', 99);
+          manager.updateGcpProofProgress(runData.proofId, 129);
+          manager.updateGcpProofProgress(runData.proofId, 9);
+          await vi.advanceTimersByTimeAsync(3000);
+          const text = JSON.stringify(displays().at(-1));
+          expect(text).toContain('9 proof parts completed');
+          expect(text).toContain('0m 3s');
+          expect(text).toContain('Last proof part completed 3s ago');
+          expect(text).toContain('Server verification — next');
+          expect(text).not.toMatch(/✅|128 proof|99 proof|candidate@example|secretDonePayload/);
+          return { proofs: [{ circuitId: 'atom-v1', proof: 'AQID', publicInputs: ['1'] }] };
+        },
+      });
+      const count = displays().length;
+      manager.updateGcpProofProgress(runData.proofId, 10);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(displays()).toHaveLength(count);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
   it('a trusted close of this window cancels proving after SDK done; wrong senders/windows cannot', async () => {
     state.openWindow = true;
     const clear = vi.fn();

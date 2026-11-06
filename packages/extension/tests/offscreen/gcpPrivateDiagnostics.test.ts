@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- mocks of the offscreen entry boundary */
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-const state = vi.hoisted(() => ({ listener: null as any, execute: vi.fn(), clear: vi.fn(), send: vi.fn(), factory: vi.fn() }));
+const state = vi.hoisted(() => ({ listener: null as any, execute: vi.fn(), clear: vi.fn(), send: vi.fn(), factory: vi.fn(), progress: vi.fn() }));
 vi.mock('react', async () => ({ ...await vi.importActual('react'), useEffect: (effect: () => void) => effect() }));
 vi.mock('react-dom/client', () => ({ createRoot: () => ({ render: (element: any) => element.type() }) }));
 vi.mock('webextension-polyfill', () => ({ default: { runtime: {
@@ -14,6 +14,7 @@ vi.mock('../../src/utils/logLevelStorage', () => ({ getStoredLogLevel: async () 
 vi.mock('../../src/offscreen/SessionManager', () => ({ SessionManager: class {
   async awaitInit() { return this; }
   executePlugin(...args: unknown[]) { return state.execute(...args); }
+  updateGcpProofProgress(...args: unknown[]) { return state.progress(...args); }
 } }));
 vi.mock('../../src/offscreen/builtinRun', () => ({ prepareBuiltInRun: async () => ({ code: 'packaged', sha256: 'a'.repeat(64) }),
   readPackagedFile: vi.fn() }));
@@ -37,6 +38,14 @@ async function start() {
   expect(reply).toEqual({ success: true, pending: true, requestId: 'request' });
   await vi.advanceTimersByTimeAsync(0);
 }
+
+it('forwards completed proof counts to the local display and the existing page channel', async () => {
+  await start();
+  state.factory.mock.calls[0][0].onProgress({ completedProofs: 9 });
+  expect(state.progress).toHaveBeenCalledWith('request', 9);
+  expect(state.send).toHaveBeenCalledWith({ type: 'PLUGIN_PROGRESS', requestId: 'request',
+    progress: { method: 'GCP_WORK', status: 'busy', index: 9, total: 128 } });
+});
 
 it.each(['ok', 'not-ok', 'rejected'] as const)('heartbeat %s emits only its fixed failure code and preserves clearing', async kind => {
   state.send.mockImplementation(async () => {

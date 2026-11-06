@@ -6,6 +6,7 @@ import { isProductOrigin } from '../../constants/productOrigins';
 import { sanitizePageProgress } from '../../constants/pageProgress';
 import { BUILTIN_PLUGINS } from '../../constants/builtinPlugins';
 import { readConsoleCredentials } from './awsPrivateCredentials';
+import { watchGcpProofProgress } from './gcpProofWatchdog';
 
 // Initialize logger at DEBUG level for content scripts (no IndexedDB access)
 logger.init(LogLevel.DEBUG);
@@ -41,7 +42,11 @@ function injectScript() {
   script.onload = () => script.remove();
 }
 
+let stopGcpProofWatchdog: (() => void) | undefined;
+
 function renderPluginUI(json: DomJson, windowId: number) {
+  stopGcpProofWatchdog?.();
+  stopGcpProofWatchdog = undefined;
   let container = document.getElementById('tlsn-plugin-container');
 
   if (!container) {
@@ -58,7 +63,11 @@ function renderPluginUI(json: DomJson, windowId: number) {
     prev && prev.style.bottom === 'auto' ? { top: prev.style.top, left: prev.style.left } : null;
 
   container.innerHTML = '';
-  container.appendChild(createNode(json, windowId));
+  const panel = createNode(json, windowId);
+  container.appendChild(panel);
+  if (panel instanceof HTMLElement && panel.id === 'gcp-private-proof-progress') {
+    stopGcpProofWatchdog = watchGcpProofProgress(panel);
+  }
 
   if (savedPosition) {
     const el = container.querySelector('[data-tlsn-draggable]') as HTMLElement | null;
@@ -371,8 +380,15 @@ window.addEventListener('message', (event) => {
         if (finishPrivateRun(requestId)) reply({ success: false, error: privateError });
       }, 13 * 60 * 1000) });
     }
-    browser.runtime
-      .sendMessage({
+    const connected = privateRun ? (async () => {
+      try {
+        const pong = await browser.runtime.sendMessage({ type: 'PING' });
+        if (!pong || typeof pong !== 'object' || !('type' in pong) || pong.type !== 'PONG') throw new Error();
+      } catch { throw new Error('EXTENSION_CONNECTION_LOST'); }
+      window.postMessage({ type: 'TLSN_RUN_BUILTIN_ACK', requestId }, window.location.origin);
+    })() : Promise.resolve();
+    connected
+      .then(() => browser.runtime.sendMessage({
         type: 'RUN_BUILTIN',
         pluginId: p.pluginId,
         fingerprint: p.fingerprint,
@@ -382,7 +398,7 @@ window.addEventListener('message', (event) => {
         methodUrls: p.methodUrls,
         requestId: p.requestId,
         sessionData: p.sessionData,
-      })
+      }))
       .then((msg) => {
         const response = msg as ExecCodeResponse & { pending?: boolean };
         if (privateRun && response?.success === true && response.pending === true) return;
@@ -399,7 +415,9 @@ window.addEventListener('message', (event) => {
           try { console.debug('GCP_PRIVATE_CONTENT_SEND_FAILED'); } catch { /* Preserve the generic failure reply. */ }
         }
         if (!privateRun) logger.error('[Content Script] Failed to run the built-in plugin:', error);
-        reply({ success: false, error: privateRun ? privateError : error?.message || 'Code execution failed' });
+        reply({ success: false, error: privateRun
+          ? error?.message === 'EXTENSION_CONNECTION_LOST' ? 'EXTENSION_CONNECTION_LOST' : privateError
+          : error?.message || 'Code execution failed' });
       });
     return;
   }

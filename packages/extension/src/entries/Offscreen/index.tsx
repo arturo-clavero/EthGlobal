@@ -102,6 +102,7 @@ const OffscreenApp: React.FC = () => {
                 policy: { cutoff: params.cutoff, windowDays: params.windowDays },
                 workerUrl: browser.runtime.getURL('gcp-private/browser-worker.js'),
                 onProgress: ({ completedProofs }) => {
+                  sessionManager.updateGcpProofProgress(request.requestId!, completedProofs);
                   browser.runtime.sendMessage({ type: 'PLUGIN_PROGRESS', requestId: request.requestId,
                     progress: { method: 'GCP_WORK', status: 'busy', index: completedProofs, total: 128 } }).catch(() => {});
                 },
