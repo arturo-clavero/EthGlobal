@@ -29,6 +29,7 @@ interface ChromeRuntimeLike {
 import { validateProvePermission, validateOpenWindowPermission } from './permissionValidator';
 import { sanitizePageProgress } from '../constants/pageProgress';
 import { allowedNavigation } from '../constants/pluginNavigate';
+import { proveSessionData } from './pluginHash';
 
 /** Maximum number of preview characters shown per reveal range. */
 const PREVIEW_MAX_CHARS = 256;
@@ -212,11 +213,12 @@ export class SessionManager {
         // Validate permissions using this execution's config (not shared state)
         validateProvePermission(requestOptions, proverOptions, pluginConfig);
 
-        // Build sessionData with defaults + execCode-level data + plugin-provided data
-        const sessionData: Record<string, string> = {
-          ...execSessionData,
-          ...proverOptions.sessionData,
-        };
+        // Build sessionData with defaults + execCode-level data + plugin-provided data;
+        // the runner's plugin sha256 last, never the plugin's.
+        const sessionData: Record<string, string> = proveSessionData(
+          execSessionData,
+          proverOptions.sessionData,
+        );
 
         // Helper: emit to both the page (via background) and the plugin UI
         const emitBoth = (step: string, progress: number, message: string) => {

@@ -4,6 +4,7 @@ import type { ContentMessage, ExecCodeResponse } from '../../types/messages';
 import { logger, LogLevel } from '@tlsn/common';
 import { isProductOrigin } from '../../constants/productOrigins';
 import { sanitizePageProgress } from '../../constants/pageProgress';
+import { BUILTIN_PLUGINS } from '../../constants/builtinPlugins';
 
 // Initialize logger at DEBUG level for content scripts (no IndexedDB access)
 logger.init(LogLevel.DEBUG);
@@ -22,6 +23,13 @@ function injectScript() {
   // (pages cannot see an extension's ID otherwise; the stock build sets none).
   // Allowed origins only; elsewhere the fork looks like the stock build.
   if (PRODUCT_PAGE) script.dataset.extensionId = browser.runtime.id;
+  // The built-in plugins (id + fingerprint) for window.tlsn.builtInPlugins,
+  // so the embedding page can tell whether this build carries the plugin it expects.
+  if (PRODUCT_PAGE) {
+    script.dataset.builtinPlugins = JSON.stringify(
+      BUILTIN_PLUGINS.map(({ id, sha256 }) => ({ id, sha256 })),
+    );
+  }
   (document.head || document.documentElement).appendChild(script);
   script.onload = () => script.remove();
 }
@@ -321,61 +329,44 @@ window.addEventListener('message', (event) => {
     return;
   }
 
-  // Handle code execution requests
-  if (event.data?.type === 'TLSN_EXEC_CODE') {
-    logger.debug('[Content Script] Received TLSN_EXEC_CODE request:', event.data.payload);
-
-    // Forward to background script
+  // window.tlsn.runBuiltIn() → run one of the
+  // extension's built-in plugins. Only named fields travel (no code); the
+  // background decides from Chrome's sender (allowed origin, top frame) and
+  // checks every value. The stock entry point for page-supplied code is gone.
+  if (event.data?.type === 'TLSN_RUN_BUILTIN') {
+    if (event.source !== window) return;
+    const p = (event.data.payload ?? {}) as Record<string, unknown>;
+    const requestId = typeof p.requestId === 'string' ? p.requestId.slice(0, 128) : '';
+    const reply = (body: { success: boolean; result?: unknown; error?: string }) =>
+      window.postMessage(
+        { type: 'TLSN_RUN_BUILTIN_RESPONSE', requestId, ...body },
+        window.location.origin,
+      );
     browser.runtime
       .sendMessage({
-        type: 'EXEC_CODE',
-        code: event.data.payload.code,
-        requestId: event.data.payload.requestId,
-        sessionData: event.data.payload.sessionData,
-        pageOrigin: window.location.origin,
+        type: 'RUN_BUILTIN',
+        pluginId: p.pluginId,
+        fingerprint: p.fingerprint,
+        verifierUrl: p.verifierUrl,
+        proxyUrl: p.proxyUrl,
+        params: p.params,
+        methodUrls: p.methodUrls,
+        requestId: p.requestId,
+        sessionData: p.sessionData,
       })
       .then((msg) => {
         const response = msg as ExecCodeResponse;
-        logger.debug('[Content Script] EXEC_CODE response:', response);
-
-        // Check if background returned success or error
-        if (response && response.success === false) {
-          // Background returned an error (e.g., user rejected plugin)
-          window.postMessage(
-            {
-              type: 'TLSN_EXEC_CODE_RESPONSE',
-              requestId: event.data.payload.requestId,
-              success: false,
-              error: response.error || 'Code execution failed',
-            },
-            window.location.origin,
-          );
+        if (response && response.success === true) {
+          reply({ success: true, result: response.result });
         } else {
-          // Success - send result back to page
-          window.postMessage(
-            {
-              type: 'TLSN_EXEC_CODE_RESPONSE',
-              requestId: event.data.payload.requestId,
-              success: true,
-              result: response?.result,
-            },
-            window.location.origin,
-          );
+          reply({ success: false, error: response?.error || 'Code execution failed' });
         }
       })
       .catch((error) => {
-        logger.error('[Content Script] Failed to execute code:', error);
-        // Send error back to page
-        window.postMessage(
-          {
-            type: 'TLSN_EXEC_CODE_RESPONSE',
-            requestId: event.data.payload.requestId,
-            success: false,
-            error: error.message || 'Code execution failed',
-          },
-          window.location.origin,
-        );
+        logger.error('[Content Script] Failed to run the built-in plugin:', error);
+        reply({ success: false, error: error?.message || 'Code execution failed' });
       });
+    return;
   }
 
   // Handle legacy TLSN_CONTENT_SCRIPT_MESSAGE

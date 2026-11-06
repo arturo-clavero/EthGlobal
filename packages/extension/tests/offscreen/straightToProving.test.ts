@@ -4,10 +4,12 @@
  * the trusted plugins on the embedding pages prove without any screen, and keeps every other
  * caller on the stock review:
  *
- *   EXEC_CODE → autoApprovalFor() (the one decision: top-frame allowed origin
- *   + allowlisted plugin hash, in the background) → 'all-session' →
- *   Background sets sessionData._approvalMode AFTER the page's sessionData →
- *   SessionManager.onProve skips the reveal review for 'all-session' only.
+ *   RUN_BUILTIN → autoApprovalFor() (the one decision: top-frame product
+ *   origin + built-in plugin + checked values, in the background) →
+ *   'all-session' → Background sets sessionData._approvalMode AFTER the page's
+ *   keys → SessionManager.onProve skips the reveal review for 'all-session'
+ *   only. Every other caller is refused outright (no run at all);
+ *   the review itself stays in SessionManager for any non-'all-session' run.
  *
  * What is revealed does not depend on the mode: the same ranges go to
  * sendRevealConfig()/reveal() whether the review was shown or skipped, and the
@@ -65,12 +67,8 @@ vi.mock('@tlsn/plugin-sdk', () => ({
 }));
 
 import { SessionManager } from '../../src/offscreen/SessionManager';
-import { autoApprovalFor } from '../../src/background/autoApproval';
-import type { AllowedPlugin } from '../../src/constants/pluginAllowlist';
+import { ALLOWED_PAGE, offscreenSessionDataFor, runRequest, topFrame } from '../helpers/builtinRunFixture';
 
-const EXT_ID = 'test-extension-id';
-const ALLOWED_PAGE = 'http://localhost:5175';
-const CODE = 'export default { main: () => null, config: {} };';
 const VERIFIER = 'http://localhost:7047';
 const CONFIG = {
   name: 'p',
@@ -100,38 +98,11 @@ const RANGES = {
   commit: undefined,
 };
 
-async function sha256Hex(text: string): Promise<string> {
-  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-async function allowlist(): Promise<AllowedPlugin[]> {
-  return [{ id: 'ours', sha256: await sha256Hex(CODE), layout: [CODE.length] }];
-}
-
-const topFrame = (origin: string) => ({
-  id: EXT_ID,
-  origin,
-  url: `${origin}/apply`,
-  frameId: 0,
-  tab: { id: 1 },
-});
-
-/** What Background EXEC_CODE does: stock prompt answer unless auto-approved. */
-async function approvalMode(
-  code: string,
-  sender: ReturnType<typeof topFrame>,
-  promptAnswer: 'manual' | 'all-session' | 'rejected',
-) {
-  const auto = await autoApprovalFor(code, sender, EXT_ID, [ALLOWED_PAGE], await allowlist());
-  return { auto, mode: auto ? auto.mode : promptAnswer };
-}
-
-/** Background's sessionData for EXEC_CODE_OFFSCREEN (page data first, then the background's keys). */
-const offscreenSessionData = (page: Record<string, string>, mode: string) => ({
+/** A run that is not auto-approved (not reachable from a page; SessionManager's own gate). */
+const manualSessionData = (page: Record<string, string>) => ({
   ...page,
-  _approvalMode: mode,
-  _pluginHash: 'h',
+  _approvalMode: 'manual',
+  _autoApproved: '0',
 });
 
 function onProveFor(sessionData: Record<string, string>) {
@@ -157,10 +128,10 @@ beforeEach(() => {
 });
 
 describe('straight to proving', () => {
-  it('allowed origin + allowlisted plugin: no review screen, the proof runs with the same reveal ranges', async () => {
-    const { auto, mode } = await approvalMode(CODE, topFrame(ALLOWED_PAGE), 'manual');
-    expect(auto?.mode).toBe('all-session');
-    const { host, onProve } = onProveFor(offscreenSessionData({ mode: 'Proxy' }, mode));
+  it('allowed origin + built-in plugin: no review screen, the proof runs with the same reveal ranges', async () => {
+    const data = offscreenSessionDataFor(runRequest(), topFrame(ALLOWED_PAGE));
+    expect(data?._approvalMode).toBe('all-session');
+    const { host, onProve } = onProveFor(data!);
 
     await expect(onProve(REQ, OPTS)).resolves.toEqual({ results: [{ type: 'SENT' }] });
     expect(host.registerRevealApproval).not.toHaveBeenCalled();
@@ -175,36 +146,36 @@ describe('straight to proving', () => {
     );
   });
 
-  for (const [label, sender, code] of [
-    ['foreign origin + allowlisted plugin', topFrame('https://example.com'), CODE],
-    ['allowed origin + unlisted plugin', topFrame(ALLOWED_PAGE), CODE + ' '],
-    ['allowed origin in an iframe + allowlisted plugin', { ...topFrame(ALLOWED_PAGE), frameId: 3 }, CODE],
+  for (const [label, sender, request] of [
+    ['foreign origin + built-in plugin', topFrame('https://example.com'), runRequest()],
+    ['allowed origin + unknown plugin', topFrame(ALLOWED_PAGE), runRequest({ pluginId: 'other-plugin' })],
+    ['allowed origin in an iframe + built-in plugin', topFrame(ALLOWED_PAGE, { frameId: 3 }), runRequest()],
   ] as const) {
-    it(`${label}: stock prompt, then the review screen is unchanged and reveals the same ranges after Approve`, async () => {
-      const { auto, mode } = await approvalMode(code, sender, 'manual');
-      expect(auto).toBeNull();
-      const { host, onProve } = onProveFor(offscreenSessionData({ mode: 'Proxy' }, mode));
-      host.registerRevealApproval.mockImplementation(
-        (resolve: () => void, _rej: unknown, d: unknown[]) => {
-          expect(d).toHaveLength(2);
-          expect(pm.reveal).not.toHaveBeenCalled(); // nothing leaves before the human decides
-          resolve();
-        },
-      );
-
-      await onProve(REQ, OPTS);
-      expect(host.registerRevealApproval).toHaveBeenCalledTimes(1);
-      expect(pm.reveal).toHaveBeenCalledWith(
-        'prover-1',
-        { sent: RANGES.sentRanges, recv: RANGES.recvRanges },
-        undefined,
-      );
+    it(`${label}: refused, nothing runs (no stock prompt path any more)`, () => {
+      expect(offscreenSessionDataFor(request, sender)).toBeNull();
     });
   }
 
-  it('foreign origin: Reject on the review screen reveals nothing', async () => {
-    const { mode } = await approvalMode(CODE, topFrame('https://example.com'), 'manual');
-    const { host, onProve } = onProveFor(offscreenSessionData({ mode: 'Proxy' }, mode));
+  it('a non-auto-approved run still gets the review screen and reveals the same ranges after Approve', async () => {
+    const { host, onProve } = onProveFor(manualSessionData({ mode: 'Proxy' }));
+    host.registerRevealApproval.mockImplementation(
+      (resolve: () => void, _rej: unknown, d: unknown[]) => {
+        expect(d).toHaveLength(2);
+        expect(pm.reveal).not.toHaveBeenCalled(); // nothing leaves before the human decides
+        resolve();
+      },
+    );
+    await onProve(REQ, OPTS);
+    expect(host.registerRevealApproval).toHaveBeenCalledTimes(1);
+    expect(pm.reveal).toHaveBeenCalledWith(
+      'prover-1',
+      { sent: RANGES.sentRanges, recv: RANGES.recvRanges },
+      undefined,
+    );
+  });
+
+  it('Reject on the review screen reveals nothing', async () => {
+    const { host, onProve } = onProveFor(manualSessionData({ mode: 'Proxy' }));
     host.registerRevealApproval.mockImplementation((_res: unknown, reject: (e: Error) => void) =>
       reject(new Error('User rejected reveal')),
     );
@@ -213,35 +184,37 @@ describe('straight to proving', () => {
     expect(pm.reveal).not.toHaveBeenCalled();
   });
 
-  it('a page-supplied _approvalMode cannot skip the review (the background value wins)', async () => {
-    const { mode } = await approvalMode(CODE, topFrame('https://example.com'), 'manual');
-    const data = offscreenSessionData({ mode: 'Proxy', _approvalMode: 'all-session' }, mode);
-    expect(data._approvalMode).toBe('manual');
-    const { host, onProve } = onProveFor(data);
-    host.registerRevealApproval.mockImplementation((resolve: () => void) => resolve());
-    await onProve(REQ, OPTS);
-    expect(host.registerRevealApproval).toHaveBeenCalledTimes(1);
+  it('a page-supplied _approvalMode is refused outright (only four page keys)', () => {
+    expect(
+      offscreenSessionDataFor(
+        runRequest({ sessionData: { mode: 'Proxy', _approvalMode: 'all-session' } }),
+        topFrame(ALLOWED_PAGE),
+      ),
+    ).toBeNull();
   });
 
-  it('Background EXEC_CODE writes _approvalMode after the page sessionData (so the page cannot set it)', () => {
-    const src = readFileSync(
+  it('Background hands the offscreen document the page keys first, then _approvalMode', () => {
+    const bg = readFileSync(
       path.resolve(__dirname, '../../src/entries/Background/index.ts'),
       'utf8',
     );
-    const block = /sessionData: \{\s*\.\.\.request\.sessionData,\s*_approvalMode: mode,/;
-    expect(src).toMatch(block);
+    expect(bg).toMatch(/sessionData: offscreenSessionData\(approval\),/);
+    const fn = readFileSync(
+      path.resolve(__dirname, '../../src/background/autoApproval.ts'),
+      'utf8',
+    );
+    expect(fn).toMatch(/return \{\s*\.\.\.approval\.sessionData,\s*_approvalMode: approval\.mode,/);
   });
 
   it('a plugin-supplied sessionData._approvalMode cannot skip the review either', async () => {
-    const { host, onProve } = onProveFor(offscreenSessionData({ mode: 'Proxy' }, 'manual'));
+    const { host, onProve } = onProveFor(manualSessionData({ mode: 'Proxy' }));
     host.registerRevealApproval.mockImplementation((resolve: () => void) => resolve());
     await onProve(REQ, { ...OPTS, sessionData: { _approvalMode: 'all-session' } });
     expect(host.registerRevealApproval).toHaveBeenCalledTimes(1);
   });
 
   it('auto-approved runs keep the permission check: a request outside the plugin config is refused before any session', async () => {
-    const { mode } = await approvalMode(CODE, topFrame(ALLOWED_PAGE), 'manual');
-    const { host, onProve } = onProveFor(offscreenSessionData({ mode: 'Proxy' }, mode));
+    const { host, onProve } = onProveFor(offscreenSessionDataFor(runRequest(), topFrame(ALLOWED_PAGE))!);
     await expect(
       onProve({ ...REQ, url: 'https://github.com/settings/tokens' }, OPTS),
     ).rejects.toThrow(/Permission denied/);

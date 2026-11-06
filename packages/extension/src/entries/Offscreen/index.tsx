@@ -4,9 +4,9 @@ import browser from 'webextension-polyfill';
 import { SessionManager } from '../../offscreen/SessionManager';
 import { logger } from '@tlsn/common';
 import { getStoredLogLevel } from '../../utils/logLevelStorage';
-import { sha256 } from '../../utils/cryptoHash';
-import { getPluginCount, incrementPluginCount } from '../../utils/pluginExecutionCounts';
 import type { OffscreenMessage } from '../../types/messages';
+import { prepareBuiltInRun, readPackagedFile } from '../../offscreen/builtinRun';
+import { runSessionData } from '../../offscreen/pluginHash';
 
 const OffscreenApp: React.FC = () => {
   useEffect(() => {
@@ -21,22 +21,13 @@ const OffscreenApp: React.FC = () => {
     logger.debug('SessionManager initialized in Offscreen');
 
     // Listen for messages from background script
-    browser.runtime.onMessage.addListener((msg: unknown) => {
+    browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.MessageSender) => {
       const request = msg as OffscreenMessage;
       // Example message handling
       if (request.type === 'PROCESS_DATA') {
         return Promise.resolve({
           success: true,
           data: 'Processed in offscreen',
-        });
-      }
-
-      if (request.type === 'GET_PLUGIN_STATS_OFFSCREEN') {
-        return sessionManager.awaitInit().then(async (sm) => {
-          const config = await sm.extractConfig(request.code as string);
-          const hash = await sha256((request.code as string) + (request.pageOrigin as string));
-          const count = await getPluginCount(hash);
-          return { success: true, config, hash, count };
         });
       }
 
@@ -53,48 +44,40 @@ const OffscreenApp: React.FC = () => {
         return;
       }
 
-      // Handle code execution requests
-      if (request.type === 'EXEC_CODE_OFFSCREEN') {
-        logger.debug('Offscreen executing code:', request.code);
-
-        if (!sessionManager) {
-          return Promise.resolve({
-            success: false,
-            error: 'SessionManager not initialized',
-            requestId: request.requestId,
-          });
-        }
-
-        return sessionManager
-          .awaitInit()
-          .then((sm) =>
-            sm.executePlugin(
-              request.code as string,
-              request.requestId as string | undefined,
-              request.sessionData as Record<string, string> | undefined,
-            ),
-          )
-          .then(async (result) => {
+      // Run one of the built-in plugins. The
+      // message carries the plugin id, fingerprint and values, never code; the
+      // code is read from the package here (offscreen/builtinRun.ts). No
+      // handler runs code taken from a message (the stock code-execution and
+      // plugin-stats handlers are gone).
+      if (request.type === 'RUN_BUILTIN_OFFSCREEN') {
+        return prepareBuiltInRun(request, sender, {
+          extensionId: browser.runtime.id,
+          backgroundUrl: browser.runtime.getURL('background.bundle.js'),
+          readPackaged: readPackagedFile,
+        }).then(async (prepared) => {
+          if ('error' in prepared) {
+            logger.warn('RUN_BUILTIN_OFFSCREEN refused:', prepared.error);
+            return { success: false, error: prepared.error, requestId: request.requestId };
+          }
+          try {
+            const sm = await sessionManager.awaitInit();
+            const result = await sm.executePlugin(
+              prepared.code,
+              request.requestId ?? undefined,
+              // The runner reports the sha256 of the packaged plugin it runs.
+              runSessionData(request.sessionData, prepared.sha256),
+            );
             logger.debug('Plugin execution result:', result);
-            const pluginHash = (request.sessionData as Record<string, string> | undefined)
-              ?._pluginHash;
-            if (pluginHash) {
-              await incrementPluginCount(pluginHash);
-            }
-            return {
-              success: true,
-              result,
-              requestId: request.requestId,
-            };
-          })
-          .catch((error) => {
+            return { success: true, result, requestId: request.requestId };
+          } catch (error) {
             logger.error('Plugin execution error:', error);
             return {
               success: false,
-              error: error.message,
+              error: error instanceof Error ? error.message : String(error),
               requestId: request.requestId,
             };
-          });
+          }
+        });
       }
     });
   }, []);
