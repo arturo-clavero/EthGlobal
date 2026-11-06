@@ -1,0 +1,7 @@
+[package]
+name = "azure_private_predicates"
+type = "lib"
+authors = [""]
+
+[dependencies]
+source = { path = "../../../gcp/circuits/lib" }

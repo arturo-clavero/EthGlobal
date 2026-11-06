@@ -1,0 +1,7 @@
+[package]
+name = "azure_private_catalog_activity_atoms"
+type = "bin"
+authors = [""]
+
+[dependencies]
+predicates = { path = "../activity-atoms-lib" }

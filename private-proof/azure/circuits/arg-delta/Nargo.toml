@@ -1,0 +1,7 @@
+[package]
+name = "azure_private_arg_delta"
+type = "bin"
+authors = [""]
+
+[dependencies]
+source = { path = "../../../gcp/circuits/lib" }
