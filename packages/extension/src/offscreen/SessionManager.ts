@@ -32,8 +32,11 @@ import { validateProvePermission, validateOpenWindowPermission } from './permiss
 import { sanitizePageProgress } from '../constants/pageProgress';
 import { allowedNavigation } from '../constants/pluginNavigate';
 import { proveSessionData } from './pluginHash';
-import { GcpPrivateWitnessRun, clearGcpOpenings } from './gcpPrivateWitness';
+import { GcpPrivateWitnessRun, PrivateWitnessRun, clearGcpOpenings } from './gcpPrivateWitness';
+import { gcpPrivateProgress } from './gcpPrivateProgress';
 import type { GcpPrivateProofModule } from './gcpPrivateWitness';
+import { AwsPrivateWitnessRun } from './awsPrivateWitness';
+import type { AwsCapture } from '../aws-private/browser-client.mjs';
 import type { RevealOutput } from 'tlsn-wasm';
 
 /** Maximum number of preview characters shown per reveal range. */
@@ -110,6 +113,11 @@ export class SessionManager {
   private configHost: Host;
   private proveManager: ProveManager;
   private initPromise: Promise<void>;
+  private gcpProgress = new Map<string, (completed: number) => void>();
+
+  updateGcpProofProgress(requestId: string, completed: number): void {
+    if (Number.isInteger(completed) && completed >= 0 && completed <= 128) this.gcpProgress.get(requestId)?.(completed);
+  }
 
   constructor() {
     // Lightweight Host for config extraction only (no execution-scoped state)
@@ -158,7 +166,7 @@ export class SessionManager {
     pluginConfig: PluginConfig | null,
     requestId: string | null,
     execSessionData: Record<string, string> | null,
-    privateRun?: GcpPrivateWitnessRun,
+    privateRun?: PrivateWitnessRun,
   ): Host {
     const proveManager = this.proveManager;
     let hostRef: Host | null = null;
@@ -453,6 +461,7 @@ export class SessionManager {
           width: options?.width,
           height: options?.height,
           showOverlay: options?.showOverlay,
+          ...(privateRun instanceof AwsPrivateWitnessRun ? { awsPrivateRequestId: requestId } : {}),
         })) as OpenWindowResponse;
 
         if (response?.type === 'WINDOW_OPENED' && response.payload?.windowId) {
@@ -525,7 +534,7 @@ export class SessionManager {
     requestId?: string,
     sessionData?: Record<string, string>,
     // Supplied only by a compiled offscreen caller after prepareBuiltInRun(), never a message field.
-    privateProof?: GcpPrivateProofModule,
+    privateProof?: GcpPrivateProofModule | PrivateWitnessRun,
   ): Promise<unknown> {
     const chromeRuntime = SessionManager.getChromeRuntime();
     if (!chromeRuntime.onMessage) {
@@ -539,10 +548,17 @@ export class SessionManager {
     if (!privateProof) logger.debug('[SessionManager] Extracted plugin config:', pluginConfig);
 
     // Create a per-execution Host with callbacks that close over this execution's state
-    const privateRun = privateProof ? new GcpPrivateWitnessRun(sessionData || {}, execRequestId, privateProof) : undefined;
+    const privateRun = privateProof instanceof PrivateWitnessRun ? privateProof :
+      privateProof ? new GcpPrivateWitnessRun(sessionData || {}, execRequestId, privateProof) : undefined;
     const host = this.createExecutionHost(pluginConfig, execRequestId, sessionData || null, privateRun);
     this.addPageProgress(host, execRequestId, sessionData || null);
     this.addNavigate(host, execRequestId, sessionData || null);
+    if (privateRun instanceof AwsPrivateWitnessRun) host.addCapability('collectAwsPrivate', (captureId: unknown) => {
+      const windowId = this.runWindows.get(host);
+      if (!windowId || typeof captureId !== 'string' || !/^[A-Za-z0-9._-]{1,256}$/.test(captureId)) throw new Error('AWS_PRIVATE_COLLECTION_FAILED');
+      return privateRun.collect(async () => await chromeRuntime.sendMessage({ type: 'AWS_PRIVATE_CREDENTIALS',
+        requestId: execRequestId, windowId, captureId }) as AwsCapture);
+    });
 
     // Wrap the plugin's event listener so it does NOT return a Promise to
     // Chrome's messaging API. The plugin listener (makeOpenWindow's onMessage)
@@ -566,6 +582,7 @@ export class SessionManager {
           (sender.url === undefined || sender.url === chromeRuntime.getURL('background.bundle.js'))) privateRun.clear();
     };
     if (privateRun) chromeRuntime.onMessage.addListener(cancelPrivateOnClose);
+    let progressTimer: ReturnType<typeof setInterval> | undefined;
 
     try {
       const result = await host.executePlugin(code, {
@@ -593,11 +610,29 @@ export class SessionManager {
       });
       // Ignore done() data for private runs: only the compiled proof module may cross the page boundary.
       if (privateRun) this.proveManager.releaseIdleWorker();
+      if (privateRun instanceof GcpPrivateWitnessRun && execRequestId) {
+        const started = Date.now();
+        let completed = 0, lastProgress = started;
+        const render = () => {
+          const windowId = this.runWindows.get(host);
+          if (windowId === undefined) return;
+          try { host.renderUi(windowId, gcpPrivateProgress(completed, Math.floor((Date.now() - started) / 1000),
+            Math.floor((Date.now() - lastProgress) / 1000))); } catch { /* Display failures must not interrupt proving. */ }
+        };
+        this.gcpProgress.set(execRequestId, count => {
+          if (count > completed) { completed = count; lastProgress = Date.now(); }
+          render();
+        });
+        render();
+        progressTimer = setInterval(render, 1000);
+      }
       return privateRun ? await privateRun.finish() : result;
     } catch (error) {
       if (privateRun) throw new Error('GCP_PRIVATE_PROOF_FAILED');
       throw error;
     } finally {
+      clearInterval(progressTimer);
+      if (execRequestId) this.gcpProgress.delete(execRequestId);
       if (privateRun) chromeRuntime.onMessage.removeListener(cancelPrivateOnClose);
       privateRun?.clear();
       const windowId = privateRun ? this.runWindows.get(host) : undefined;

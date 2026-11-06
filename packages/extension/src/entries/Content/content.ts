@@ -95,14 +95,29 @@ class ExtensionAPI {
         ? options.requestId
         : `run_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     return new Promise((resolve, reject) => {
-      const handleMessage = (event: MessageEvent) => {
-        if (event.origin !== window.location.origin) return;
-        if (event.data?.type !== 'TLSN_RUN_BUILTIN_RESPONSE') return;
-        if (event.data?.requestId !== requestId) return;
+      const privateRun = options.pluginId === 'gcp-work' || options.pluginId === 'aws-private-work';
+      let startTimer: ReturnType<typeof setTimeout> | undefined;
+      let runTimer: ReturnType<typeof setTimeout> | undefined;
+      const cleanup = () => {
+        clearTimeout(startTimer); clearTimeout(runTimer);
         window.removeEventListener('message', handleMessage);
+      };
+      const handleMessage = (event: MessageEvent) => {
+        if (event.source !== window || event.origin !== window.location.origin || event.data?.requestId !== requestId) return;
+        if (privateRun && event.data?.type === 'TLSN_RUN_BUILTIN_ACK') {
+          clearTimeout(startTimer);
+          return;
+        }
+        if (event.data?.type !== 'TLSN_RUN_BUILTIN_RESPONSE') return;
+        cleanup();
         if (event.data.success) resolve(event.data.result);
         else reject(new Error(event.data.error || 'Code execution failed'));
       };
+      // Reloading an extension leaves this page API behind but removes its content-script connection.
+      if (privateRun) {
+        startTimer = setTimeout(() => { cleanup(); reject(new Error('EXTENSION_CONNECTION_LOST')); }, 10_000);
+        runTimer = setTimeout(() => { cleanup(); reject(new Error('Private verification timed out')); }, 13 * 60 * 1000);
+      }
       window.addEventListener('message', handleMessage);
       window.postMessage(
         {
