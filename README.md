@@ -17,6 +17,7 @@
 - [Arkiv](docs/arkiv.md): what is published, how to query it, what is kept off
 - [World ID](docs/world-id.md): the optional one-human-per-job check
 - [Verification](docs/verification.md): the verify page, verifier keys, hosting
+- [Integration feedback](docs/integration-feedback.md): problems hit integrating Arkiv and World ID
 
 ## CROPS
 
