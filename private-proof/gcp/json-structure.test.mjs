@@ -73,6 +73,30 @@ test('private keys remain unknown and public duplicate keys are always rejected'
   fails(badKey.bytes, badKey.slots, 'EXPECTED_STRING_KEY');
 });
 
+test('opaque objects require trusted opt-in and remain unverified without internal fields', () => {
+  const { bytes, slots } = hidden('{"claims":{"employer-key":"private"},"other":1}',
+    [['{"employer-key":"private"}', 6]]);
+  fails(bytes, slots, 'SLOT_KIND');
+  const result = parseJsonStructure(bytes, slots, true);
+  assert.equal(result.requiresAtomicProofs, true);
+  assert.equal(result.requiresObjectProofs, true);
+  assert.deepEqual(result.root.entries[0].value,
+    { type: 'object', kind: 6, start: slots[0].start, end: slots[0].end, privateSlot: 0 });
+  assert.equal(JSON.stringify(result).includes('employer-key'), false);
+  assert.equal(result.root.entries[1].value.value, 1);
+  assert.throws(() => parseJsonStructure(bytes, slots, 'true'), /OBJECT_POLICY/);
+});
+
+test('opaque object opt-in does not permit object keys, uncovered bytes or interior spans', () => {
+  for (const [text, token] of [['{{}:0}', '{}'], ['{"claims":{}}', '{'], ['{"claims":{}}', '{}']]) {
+    const { bytes, slots } = hidden(text, [[token, 6]]);
+    if (token === '{}' && text === '{"claims":{}}') bytes[slots[0].start] = 123;
+    assert.throws(() => parseJsonStructure(bytes, slots, true), JsonStructureError);
+  }
+  const partial = hidden('{"claims":{"x":1}}', [['"x":1', 6]]);
+  assert.throws(() => parseJsonStructure(partial.bytes, partial.slots, true), /EXPECTED_STRING_KEY/);
+});
+
 test('slots cannot replace a string interior, escape fragment or partial public token', () => {
   for (const [text, token, kind] of [
     ['["secret"]', 'secret', 1],

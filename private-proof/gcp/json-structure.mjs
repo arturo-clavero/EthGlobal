@@ -2,14 +2,15 @@
  *
  * This module verifies neither TLS authentication nor ZK proofs. EVERY returned
  * privateSlot remains provisional until the caller verifies its exact authenticated
- * range/hash and a ZK proof that its COMPLETE bytes form the claimed JSON atom.
- * In particular, a private string includes both quotes. A private object key is
+ * range/hash and a ZK proof of its COMPLETE bytes and selected internal semantics.
+ * A private string includes both quotes. Opaque objects require explicit opt-in
+ * and a complete object proof; an atomic proof is insufficient. A private object key is
  * unknown: callers cannot assume it differs from any public key without a proof.
  * Objects retain entry lists; this module never constructs objects from JSON keys.
  */
 
 export const JSON_STRUCTURE_LIMITS = Object.freeze({ bytes: 16384, depth: 32, nodes: 512, slots: 256 });
-const TYPES = [undefined, 'string', 'number', 'boolean', 'boolean', 'null'];
+const TYPES = [undefined, 'string', 'number', 'boolean', 'boolean', 'null', 'object'];
 const decoder = new TextDecoder('utf-8', { fatal: true });
 const whitespace = byte => byte === 0x20 || byte === 0x09 || byte === 0x0a || byte === 0x0d;
 const delimiter = byte => whitespace(byte) || byte === 0x2c || byte === 0x5d || byte === 0x7d;
@@ -27,16 +28,19 @@ export class JsonStructureError extends Error {
  * @param {Uint8Array} bytes Full JSON body; every private position must be zero.
  * @param {{start:number,end:number,kind:number,hash:string}[]} privateSlots
  *   Sorted, nonoverlapping byte spans; kinds: 1 string, 2 number, 3 true,
- *   4 false, 5 null. Hashes are lowercase SHA256 hex. Containers are forbidden.
+ *   4 false, 5 null, 6 opaque object (only with explicit trusted opt-in).
+ *   Hashes are lowercase SHA256 hex. Arrays cannot be opaque.
+ * @param {boolean} allowPrivateObjects Trusted caller policy, never a client flag.
  * @returns {{root:object,slots:object[],requiresAtomicProofs:boolean}}
  *   Nodes have type/start/end. Public atoms additionally have kind/value;
  *   numbers retain raw text because JSON.parse may round them. Private atoms
  *   have kind/privateSlot and NEVER a value. Arrays have items; objects have
  *   entries:[{key,value}] and hasPrivateKeys. All offsets are body byte offsets.
  */
-export function parseJsonStructure(bytes, privateSlots = []) {
+export function parseJsonStructure(bytes, privateSlots = [], allowPrivateObjects = false) {
   const fail = (code, offset = 0) => { throw new JsonStructureError(code, offset); };
   if (!(bytes instanceof Uint8Array)) fail('INPUT_TYPE');
+  if (typeof allowPrivateObjects !== 'boolean') fail('OBJECT_POLICY');
   if (!bytes.length || bytes.length > JSON_STRUCTURE_LIMITS.bytes) fail('INPUT_LIMIT');
   if (!Array.isArray(privateSlots)) fail('SLOTS_TYPE');
   if (privateSlots.length > JSON_STRUCTURE_LIMITS.slots) fail('SLOT_LIMIT');
@@ -51,9 +55,9 @@ export function parseJsonStructure(bytes, privateSlots = []) {
       fail('SLOT_RANGE');
     }
     if (start < previousEnd) fail('SLOT_ORDER', start);
-    if (!Number.isInteger(kind) || kind < 1 || kind > 5) fail('SLOT_KIND', start);
+    if (!Number.isInteger(kind) || kind < 1 || kind > (allowPrivateObjects ? 6 : 5)) fail('SLOT_KIND', start);
     const length = end - start;
-    if ((kind === 1 && length < 2) || ((kind === 3 || kind === 5) && length !== 4) ||
+    if (((kind === 1 || kind === 6) && length < 2) || ((kind === 3 || kind === 5) && length !== 4) ||
         (kind === 4 && length !== 5)) fail('SLOT_LENGTH', start);
     if (typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash)) fail('SLOT_HASH', start);
     for (let at = start; at < end; at++) if (source[at] !== 0) fail('PRIVATE_NOT_ZERO', at);
@@ -166,5 +170,6 @@ export function parseJsonStructure(bytes, privateSlots = []) {
   skipWhitespace();
   if (position !== source.length) fail('TRAILING_BYTES', position);
   if (slotIndex !== slots.length) fail('UNUSED_SLOT', position);
-  return { root, slots, requiresAtomicProofs: slots.length > 0 };
+  return { root, slots, requiresAtomicProofs: slots.length > 0,
+    ...(slots.some(slot => slot.kind === 6) ? { requiresObjectProofs: true } : {}) };
 }

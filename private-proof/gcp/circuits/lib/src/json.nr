@@ -7,19 +7,19 @@ global NUMBER: u8 = 4;
 global LITERAL: u8 = 5;
 global KEY: u8 = 6;
 
-struct Node {
-    kind: u8,
-    start: u32,
-    end: u32,
-    parent: u32,
-    ordinal: u32,
-    key: u32,
-    children: u32,
+pub struct Node {
+    pub kind: u8,
+    pub start: u32,
+    pub end: u32,
+    pub parent: u32,
+    pub ordinal: u32,
+    pub key: u32,
+    pub children: u32,
 }
 
-struct Json<let T: u32> {
-    nodes: [Node; T],
-    count: u32,
+pub struct Json<let T: u32> {
+    pub nodes: [Node; T],
+    pub count: u32,
 }
 
 pub struct Identity {
@@ -42,7 +42,7 @@ pub(crate) fn number_end(state: u8) -> bool { (state == 2) | (state == 3) | (sta
 
 // Shared scalar lexer: JSON tree validation and selective atomic proofs use
 // the same escape, UTF-8 and number rules without sharing an AST.
-pub(crate) struct StringState {
+pub struct StringState {
     escaped: bool,
     unicode_left: u8,
     utf8_left: u8,
@@ -50,12 +50,28 @@ pub(crate) struct StringState {
     utf8_high: u8,
 }
 
-pub(crate) fn string_start() -> StringState {
+pub fn string_start() -> StringState {
     StringState { escaped: false, unicode_left: 0, utf8_left: 0, utf8_low: 128, utf8_high: 191 }
 }
 
+// Fixed-width state bytes permit private proof chaining without exposing lexer internals.
+pub fn string_state_bytes(state: StringState) -> [u8; 5] {
+    [state.escaped as u8, state.unicode_left, state.utf8_left, state.utf8_low, state.utf8_high]
+}
+
+pub fn string_state_from_bytes(bytes: [u8; 5]) -> StringState {
+    assert((bytes[0] <= 1) & (bytes[1] <= 4) & (bytes[2] <= 3), "Invalid JSON string state");
+    assert(((bytes[3] == 128) | (bytes[3] == 144) | (bytes[3] == 160)) &
+        ((bytes[4] == 143) | (bytes[4] == 159) | (bytes[4] == 191)), "Invalid JSON string state");
+    assert((bytes[0] == 0) | ((bytes[1] == 0) & (bytes[2] == 0)), "Invalid JSON string state");
+    assert((bytes[1] == 0) | (bytes[2] == 0), "Invalid JSON string state");
+    assert((bytes[2] != 0) | ((bytes[3] == 128) & (bytes[4] == 191)), "Invalid JSON string state");
+    assert((bytes[3] <= bytes[4]), "Invalid JSON string state");
+    StringState { escaped: bytes[0] == 1, unicode_left: bytes[1], utf8_left: bytes[2], utf8_low: bytes[3], utf8_high: bytes[4] }
+}
+
 // Input starts after the opening quote. `closed` identifies an unescaped quote.
-pub(crate) fn string_byte(state: StringState, c: u8) -> (StringState, bool) {
+pub fn string_byte(state: StringState, c: u8) -> (StringState, bool) {
     let mut next = state;
     let mut closed = false;
     if state.utf8_left > 0 {
@@ -368,7 +384,7 @@ fn verify_parse_keys<let N: u32, let T: u32>(body: [u8; N], len: u32, json: Json
                         ordinal = 0;
                         state = if kind == ARRAY { 0 } else { 3 };
                     } else if (kind == STRING) | (kind == KEY) {
-                        require_ascii_string = (kind == KEY) & (container == ascii_key_parent);
+                        require_ascii_string = (kind == KEY) & ((container == ascii_key_parent) | (ascii_key_parent == NONE - 1));
                         if require_ascii_string {
                             assert(node.end - node.start <= 130, "Selected JSON string byte limit");
                         }
@@ -410,11 +426,16 @@ fn parse_with_key_policy<let N: u32, let T: u32>(body: [u8; N], len: u32, ascii_
     json
 }
 
-fn parse<let N: u32, let T: u32>(body: [u8; N], len: u32) -> Json<T> {
+pub fn parse<let N: u32, let T: u32>(body: [u8; N], len: u32) -> Json<T> {
     parse_with_key_policy(body, len, NONE)
 }
 
-fn child<let T: u32>(json: Json<T>, parent: u32, ordinal: u32) -> u32 {
+// Source schemas with literal keys can reject escaped aliases during the single lexical pass.
+pub fn parse_ascii_keys<let N: u32, let T: u32>(body: [u8; N], len: u32) -> Json<T> {
+    parse_with_key_policy(body, len, NONE - 1)
+}
+
+pub fn child<let T: u32>(json: Json<T>, parent: u32, ordinal: u32) -> u32 {
     let mut found = NONE;
     for i in 0..T {
         if (i < json.count) & (json.nodes[i].kind != KEY) & (json.nodes[i].parent == parent) & (json.nodes[i].ordinal == ordinal) {
@@ -435,7 +456,7 @@ fn raw_eq<let N: u32, let M: u32>(body: [u8; N], node: Node, expected: [u8; M]) 
     same
 }
 
-fn string_eq<let N: u32, let M: u32>(body: [u8; N], node: Node, expected: [u8; M]) -> bool {
+pub fn string_eq<let N: u32, let M: u32>(body: [u8; N], node: Node, expected: [u8; M]) -> bool {
     let mut same = ((node.kind == STRING) | (node.kind == KEY)) & (node.end - node.start == M + 2);
     for i in 0..M {
         if node.start + 1 + i < N { same = same & (body[node.start + 1 + i] == expected[i]); }
@@ -444,7 +465,7 @@ fn string_eq<let N: u32, let M: u32>(body: [u8; N], node: Node, expected: [u8; M
     same
 }
 
-fn ascii_string<let N: u32, let M: u32>(body: [u8; N], node: Node) -> ([u8; M], u32) {
+pub fn ascii_string<let N: u32, let M: u32>(body: [u8; N], node: Node) -> ([u8; M], u32) {
     assert((node.kind == STRING) | (node.kind == KEY), "Expected JSON string");
     let len = node.end - node.start - 2;
     assert(len <= M, "Selected JSON string limit");
@@ -534,7 +555,7 @@ fn decimal<let N: u32>(bytes: [u8; N], start: u32, len: u32) -> u32 {
     result
 }
 
-fn timestamp_day(bytes: [u8; 30], len: u32, cutoff_ms: u64, window_days: u32) -> u32 {
+pub fn timestamp_day(bytes: [u8; 30], len: u32, cutoff_ms: u64, window_days: u32) -> u32 {
     assert((len == 20) | ((len >= 22) & (len <= 30)), "Invalid timestamp length");
     assert((bytes[4] == 45) & (bytes[7] == 45) & (bytes[10] == 84) & (bytes[13] == 58) & (bytes[16] == 58) & (bytes[len - 1] == 90),
         "Invalid UTC timestamp");
@@ -976,4 +997,32 @@ fn timestamp_atom_rejects_escaped_timestamp_digits() {
 fn timestamp_atom_rejects_one_nanosecond_before_window() {
     let value = "\"2023-12-24T23:59:59.999999999Z\"".as_bytes();
     timestamp_atom(value, value.len(), 1704067200000, 7);
+}
+
+#[test]
+fn string_state_bytes_roundtrip_across_escape_and_utf8_boundaries() {
+    let bytes: [u8; 11] = [92, 117, 48, 48, 52, 49, 240, 159, 152, 128, 34];
+    let mut state = string_start();
+    for i in 0..11 {
+        let encoded = string_state_bytes(state);
+        let restored = string_state_from_bytes(encoded);
+        assert(string_state_bytes(restored) == encoded);
+        let (next, closed) = string_byte(restored, bytes[i]);
+        assert(closed == (i == 10)); state = next;
+    }
+}
+
+#[test(should_fail_with = "Invalid JSON string state")]
+fn string_state_bytes_reject_noncanonical_boolean() { let _ = string_state_from_bytes([2, 0, 0, 128, 191]); }
+
+#[test(should_fail_with = "Invalid JSON string state")]
+fn string_state_bytes_reject_excess_unicode_digits() { let _ = string_state_from_bytes([0, 5, 0, 128, 191]); }
+
+#[test(should_fail_with = "Invalid JSON string state")]
+fn string_state_bytes_reject_invalid_utf8_bound() { let _ = string_state_from_bytes([0, 0, 2, 0, 255]); }
+
+#[test(should_fail_with = "Invalid JSON UTF-8")]
+fn string_state_bytes_preserve_utf8_restriction() {
+    let (state, _) = string_byte(string_start(), 240);
+    let _ = string_byte(string_state_from_bytes(string_state_bytes(state)), 128);
 }

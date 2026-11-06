@@ -29,6 +29,22 @@ export function authenticatedTranscript(receipt, expected) {
   return authenticatedTranscriptRanges(receipt);
 }
 
+/** Same session binding as authenticatedTranscript for another source. `source` is a fixed
+ * application policy ({host, method, step}), never a field in a client proof bundle. */
+export function authenticatedSourceTranscript(receipt, expected, source) {
+  if (!record(receipt) || !record(expected) || receipt.failure !== undefined ||
+      !exactKeys(source, ['host', 'method', 'step']) || typeof source.host !== 'string' ||
+      !source.host || typeof source.method !== 'string' || !source.method ||
+      !UUID.test(expected.sessionId ?? '') || !UUID.test(expected.proofId ?? '') ||
+      !HEX.test(expected.pluginSha256 ?? '') || !/^[A-Za-z0-9_-]{43}$/.test(expected.nonceMac ?? '') ||
+      typeof source.step !== 'string' || !source.step || expected.step !== source.step || !record(receipt.session) ||
+      receipt.session.id !== expected.sessionId || receipt.session.proofId !== expected.proofId ||
+      receipt.session.pluginSha256 !== expected.pluginSha256 || receipt.session.nonceMac !== expected.nonceMac ||
+      receipt.session.step !== expected.step || receipt.session.method !== source.method || receipt.session.mode !== 'Proxy' ||
+      receipt.server_name !== source.host) fail();
+  return authenticatedTranscriptRanges(receipt);
+}
+
 /** Provider-neutral range checks only. The caller MUST authenticate the native
  * receipt and bind its host/session/attempt before calling; this authenticates no source. */
 export function authenticatedTranscriptRanges(receipt) {
