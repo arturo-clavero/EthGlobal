@@ -10,6 +10,14 @@
 >
 > Licensed like upstream: MIT or Apache-2.0, at your option. The upstream README follows.
 
+## Documentation
+
+- [Architecture](docs/architecture.md): components, data flow of a private proof, trust model, build
+- [CROPS](docs/crops.md): censorship resistance, open source, privacy and security, with trade-offs
+- [Arkiv](docs/arkiv.md): what is published, how to query it, what is kept off
+- [World ID](docs/world-id.md): the optional one-human-per-job check
+- [Verification](docs/verification.md): the verify page, verifier keys, hosting
+
 ## CROPS
 
 - **Censorship resistance.** The fork's operator runs a TLSNotary verifier and holds an attestation signing key. If
