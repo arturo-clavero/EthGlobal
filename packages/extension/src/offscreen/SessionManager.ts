@@ -592,6 +592,7 @@ export class SessionManager {
         },
       });
       // Ignore done() data for private runs: only the compiled proof module may cross the page boundary.
+      if (privateRun) this.proveManager.releaseIdleWorker();
       return privateRun ? await privateRun.finish() : result;
     } catch (error) {
       if (privateRun) throw new Error('GCP_PRIVATE_PROOF_FAILED');

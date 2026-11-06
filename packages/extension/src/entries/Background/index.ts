@@ -10,6 +10,7 @@ import { logger } from '@tlsn/common';
 import { getStoredLogLevel } from '../../utils/logLevelStorage';
 import type { BackgroundMessage } from '../../types/messages';
 import { GCP_PRIVATE_ROUTE_TTL_MS, liveGcpPrivateRoute, takeGcpPrivateCompletion } from '../../background/gcpPrivateCompletion';
+import { waitForOffscreenReady } from '../../background/offscreenReady';
 
 const chrome = (global as typeof globalThis).chrome;
 
@@ -280,6 +281,7 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
       let pendingPrivate = false;
       try {
         await createOffscreenDocument();
+        await waitForOffscreenReady(() => chrome.runtime.sendMessage({ type: 'PROCESS_DATA' }));
         const response = await chrome.runtime.sendMessage({
           type: 'RUN_BUILTIN_OFFSCREEN',
           pluginId: approval.plugin.id,

@@ -24,9 +24,7 @@ export interface RevealRangeWithHandler {
   handler: Handler;
 }
 
-// Extract worker reference so we can listen for progress messages alongside Comlink.
-const worker = new Worker(new URL('./worker.ts', import.meta.url));
-const workerApi = Comlink.wrap<{
+type ProverWorkerApi = {
   init: (config?: {
     loggingLevel?: string;
     hardwareConcurrency?: number;
@@ -55,7 +53,7 @@ const workerApi = Comlink.wrap<{
   };
   reveal: (proverId: string, revealConfig: Reveal, commitConfig?: Commit) => Promise<RevealOutput>;
   freeProver: (proverId: string) => Promise<void>;
-}>(worker);
+};
 
 // ============================================================================
 // WebSocket Message Types (matching Rust verifier)
@@ -104,6 +102,14 @@ export type ProgressCallback = (data: {
 }) => void;
 
 export class ProveManager {
+  private worker = new Worker(new URL('./worker.ts', import.meta.url));
+  private workerApi = Comlink.wrap<ProverWorkerApi>(this.worker);
+  private initialization?: Promise<void>;
+  private initialized = false;
+  private pendingCreates = 0;
+  private activeProvers = new Set<string>();
+  private pendingCleanup = 0;
+
   /** Maps proverId to its session state - each prover has isolated session */
   private sessions: Map<string, SessionState> = new Map();
 
@@ -131,11 +137,18 @@ export class ProveManager {
     }
   }
 
-  async init() {
+  init(): Promise<void> {
+    return this.initialization ??= this.initializeWorker().catch(error => {
+      this.initialization = undefined;
+      throw error;
+    });
+  }
+
+  private async initializeWorker() {
     // Guard against duplicate listener registration if init() is called more than once.
     if (!this.listenerAdded) {
       this.listenerAdded = true;
-      worker.addEventListener('message', (event: MessageEvent) => {
+      this.worker.addEventListener('message', (event: MessageEvent) => {
         if (event.data?.type === 'WASM_PROGRESS') {
           // WASM worker doesn't include proverId in progress messages, so
           // broadcast to all registered callbacks. In practice only one
@@ -152,7 +165,7 @@ export class ProveManager {
       });
     }
 
-    await workerApi.init({
+    await this.workerApi.init({
       loggingLevel: 'Info',
       hardwareConcurrency: navigator.hardwareConcurrency,
       crateFilters: [
@@ -161,7 +174,32 @@ export class ProveManager {
       ],
     });
 
+    this.initialized = true;
     logger.debug('ProveManager initialized');
+  }
+
+  /** Retire the idle TLS/WASM heap before a separate local proof worker starts. */
+  releaseIdleWorker(): boolean {
+    if (!this.initialized || this.pendingCreates || this.pendingCleanup || this.activeProvers.size) return false;
+    this.worker.terminate();
+    this.worker = new Worker(new URL('./worker.ts', import.meta.url));
+    this.workerApi = Comlink.wrap<ProverWorkerApi>(this.worker);
+    this.initialization = undefined;
+    this.initialized = false;
+    this.listenerAdded = false;
+    return true;
+  }
+
+  private async allocateProver(config: ProverConfig): Promise<string> {
+    this.pendingCreates++;
+    try {
+      await this.init();
+      const proverId = await this.workerApi.createProver(config);
+      this.activeProvers.add(proverId);
+      return proverId;
+    } finally {
+      this.pendingCreates--;
+    }
   }
 
   /**
@@ -313,7 +351,7 @@ export class ProveManager {
     mode: ProverMode = 'Mpc',
   ) {
     // Create prover in the worker first to get the ID.
-    const proverId = await workerApi.createProver({
+    const proverId = await this.allocateProver({
       server_name: serverDns,
       mode,
       max_sent_data: maxSentData,
@@ -338,7 +376,7 @@ export class ProveManager {
       );
 
       // Setup prover with verifier - IoChannel created in worker.
-      await workerApi.setupProver(proverId, sessionUrl);
+      await this.workerApi.setupProver(proverId, sessionUrl);
 
       return proverId;
     } catch (error) {
@@ -362,7 +400,7 @@ export class ProveManager {
     maxSentData = 4096,
     mode: ProverMode = 'Mpc',
   ): Promise<string> {
-    const proverId = await workerApi.createProver({
+    const proverId = await this.allocateProver({
       server_name: serverDns,
       mode,
       max_sent_data: maxSentData,
@@ -377,7 +415,7 @@ export class ProveManager {
     });
 
     try {
-      await workerApi.setupProverRelay(proverId, Comlink.proxy(onOut));
+      await this.workerApi.setupProverRelay(proverId, Comlink.proxy(onOut));
       return proverId;
     } catch (error) {
       logger.error('[ProveManager] Failed to create relay prover:', error);
@@ -388,12 +426,12 @@ export class ProveManager {
 
   /** Deliver bytes received over the relay (from the host page) to the prover. */
   deliverRelayData(bytes: Uint8Array): void {
-    workerApi.deliverToWasm(bytes);
+    this.workerApi.deliverToWasm(bytes);
   }
 
   /** Signal that the relayed channel closed. */
   signalRelayClosed(): void {
-    workerApi.signalRelayClosed();
+    this.workerApi.signalRelayClosed();
   }
 
   /**
@@ -460,7 +498,7 @@ export class ProveManager {
     // Extract path+query from full URL (hyper sends absolute-form if given full URL)
     const parsedUrl = new URL(options.url);
     const requestUri = parsedUrl.pathname + parsedUrl.search;
-    await workerApi.sendRequest(proverId, proxyUrl, {
+    await this.workerApi.sendRequest(proverId, proxyUrl, {
       uri: requestUri,
       method: options.method as Method,
       headers: headerMap,
@@ -470,7 +508,7 @@ export class ProveManager {
     // Snapshot transcript bytes now so the approval gate can read them
     // synchronously later without crossing the worker boundary again.
     try {
-      const transcript = await workerApi.getTranscript(proverId);
+      const transcript = await this.workerApi.getTranscript(proverId);
       this.transcriptBytes.set(proverId, {
         sent: new Uint8Array(transcript.sent),
         recv: new Uint8Array(transcript.recv),
@@ -481,7 +519,7 @@ export class ProveManager {
   }
 
   async transcript(proverId: string) {
-    return workerApi.getTranscript(proverId);
+    return this.workerApi.getTranscript(proverId);
   }
 
   /** Get the cached sent transcript bytes for a prover. Empty if not yet captured. */
@@ -499,7 +537,7 @@ export class ProveManager {
    * Runs in the WASM worker — no transcript bytes transferred to the main thread.
    */
   async computeReveal(proverId: string, handlers: Handler[]) {
-    return workerApi.computeReveal(proverId, handlers);
+    return this.workerApi.computeReveal(proverId, handlers);
   }
 
   async reveal(
@@ -510,7 +548,7 @@ export class ProveManager {
     },
     commitConfig?: Commit,
   ): Promise<RevealOutput> {
-    return workerApi.reveal(proverId, { ...revealRanges, server_identity: true }, commitConfig);
+    return this.workerApi.reveal(proverId, { ...revealRanges, server_identity: true }, commitConfig);
   }
 
   /** Hard timeout for getResponse polling (60 seconds). */
@@ -583,11 +621,15 @@ export class ProveManager {
     this.progressCallbacks.delete(proverId);
     this.transcriptBytes.delete(proverId);
 
-    // Free worker prover
+    // Keep retirement blocked until the underlying WASM cleanup has settled.
+    this.pendingCleanup++;
     try {
-      await workerApi.freeProver(proverId);
+      await this.workerApi.freeProver(proverId);
+      this.activeProvers.delete(proverId);
     } catch (err) {
       logger.warn('[ProveManager] freeProver failed for', proverId, ':', err);
+    } finally {
+      this.pendingCleanup--;
     }
 
     logger.debug('[ProveManager] Prover cleanup complete:', proverId);

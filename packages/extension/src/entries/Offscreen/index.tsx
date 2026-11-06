@@ -8,6 +8,7 @@ import type { OffscreenMessage } from '../../types/messages';
 import { prepareBuiltInRun, readPackagedFile } from '../../offscreen/builtinRun';
 import { runSessionData } from '../../offscreen/pluginHash';
 import { createGcpPrivateModule } from '../../gcp-private/browser-client.mjs';
+import { gcpPrivateDiagnostic } from '../../offscreen/gcpPrivateWitness';
 
 const OffscreenApp: React.FC = () => {
   useEffect(() => {
@@ -87,8 +88,10 @@ const OffscreenApp: React.FC = () => {
             const heartbeat = setInterval(() => {
               browser.runtime.sendMessage({ type: 'GCP_PRIVATE_HEARTBEAT', requestId: request.requestId })
                 .then(reply => {
-                  if (!reply || typeof reply !== 'object' || !('ok' in reply) || reply.ok !== true) privateModule.clear();
-                }).catch(() => privateModule.clear());
+                  if (!reply || typeof reply !== 'object' || !('ok' in reply) || reply.ok !== true) {
+                    gcpPrivateDiagnostic('HEARTBEAT_NOT_OK'); privateModule.clear();
+                  }
+                }).catch(() => { gcpPrivateDiagnostic('HEARTBEAT_REJECTED'); privateModule.clear(); });
             }, 20_000);
             // Return the acknowledgement before awaiting capture/proving: one
             // service-worker request must not remain open past Chrome's five minutes.
@@ -97,6 +100,7 @@ const OffscreenApp: React.FC = () => {
                 const result = await execute(privateModule);
                 await browser.runtime.sendMessage({ type: 'GCP_PRIVATE_COMPLETE', requestId: request.requestId, success: true, result });
               } catch {
+                gcpPrivateDiagnostic('EXECUTE_FAILED');
                 await browser.runtime.sendMessage({ type: 'GCP_PRIVATE_COMPLETE', requestId: request.requestId,
                   success: false, error: 'GCP_PRIVATE_PROVING_FAILED' }).catch(() => {});
               } finally { clearInterval(heartbeat); privateModule.clear(); privateGcpRunning = false; }

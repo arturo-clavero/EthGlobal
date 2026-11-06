@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createHash, webcrypto } from 'node:crypto';
 
 const state = vi.hoisted(() => ({ snapshots: [] as Uint8Array[], openings: [] as any[],
-  seen: [] as any[], fail: false, hosts: [] as any[], openWindow: false }));
+  seen: [] as any[], fail: false, hosts: [] as any[], openWindow: false, cleanupCount: 0, releaseCalls: 0 }));
 const handler = (type: string) => ({ type, part: 'ALL', action: { kind: 'HASH', algorithm: 'SHA256' } });
 const runData = { _autoApproved: '1', method: 'GCP_WORK', mode: 'Proxy',
   proofId: '11111111-1111-4111-8111-111111111111', pluginSha256: 'a'.repeat(64) };
@@ -61,14 +61,15 @@ vi.mock('../../src/offscreen/ProveManager', () => ({ ProveManager: class {
       { ...handler('RECV'), value: Buffer.from(last.recv[0].hash).toString('hex') }] };
   }
   getSessionId(id: string) { return `22222222-2222-4222-8222-22222222222${id}`; }
-  cleanupProver() {}
+  cleanupProver() { state.cleanupCount++; }
+  releaseIdleWorker() { expect(state.cleanupCount).toBe(6); state.releaseCalls++; return true; }
 } }));
 
 import { SessionManager } from '../../src/offscreen/SessionManager';
 
 beforeEach(() => {
   vi.stubGlobal('crypto', webcrypto);
-  state.snapshots = []; state.openings = []; state.seen = []; state.fail = false; state.hosts = []; state.openWindow = false;
+  state.snapshots = []; state.openings = []; state.seen = []; state.fail = false; state.hosts = []; state.openWindow = false; state.cleanupCount = 0; state.releaseCalls = 0;
   vi.stubGlobal('chrome', { runtime: { id: 'test-extension', getURL: (path: string) => `chrome-extension://test-extension/${path}`,
     sendMessage: vi.fn().mockImplementation(async message => message.type === 'OPEN_WINDOW' ? { type: 'WINDOW_OPENED', payload: { windowId: 7 } } : undefined),
     onMessage: { addListener: vi.fn(), removeListener: vi.fn() } } });
@@ -105,6 +106,7 @@ describe('SessionManager private GCP capability', () => {
       { ...runData, _approvalMode: 'all-session' }, {
         identityEmail: () => 'candidate@example.test',
         prove: async witnesses => {
+          expect(state.releaseCalls).toBe(1);
           copies = witnesses.flatMap(w => [w.sent, w.recv, ...w.openings.sent.map(o => o.blinder), ...w.openings.recv.map(o => o.blinder)]);
           expect(copies.every(b => b.some(n => n !== 0))).toBe(true);
           return { proofs: [{ circuitId: 'atom-v1', proof: 'AQID', publicInputs: ['1'] }] };

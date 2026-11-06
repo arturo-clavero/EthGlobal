@@ -5,8 +5,8 @@ import { GcpPrivateWitnessRun, clearGcpOpenings } from '../../src/offscreen/gcpP
 import type { GcpPrivateProofModule, GcpPrivateWitness, GcpPrivateRevealPlan, GcpPrivateProof } from '../../src/offscreen/gcpPrivateWitness';
 
 vi.mock('@tlsn/plugin-sdk', () => ({ canonicalizeHandler: (handler: unknown) => handler }));
-beforeEach(() => vi.stubGlobal('crypto', webcrypto));
-afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+beforeEach(() => { vi.stubGlobal('crypto', webcrypto); vi.spyOn(console, 'debug').mockImplementation(() => {}); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 const proofId = '11111111-1111-4111-8111-111111111111';
 const data = { _autoApproved: '1', method: 'GCP_WORK', mode: 'Proxy', proofId,
   pluginSha256: 'a'.repeat(64), nonceMac: 'b'.repeat(43) };
@@ -92,6 +92,8 @@ describe('GCP private witness stays in its offscreen execution', () => {
     expect(held.length).toBeGreaterThan(0);
     expect(held.every(array => array.every(n => n === 0))).toBe(true);
     expect(JSON.stringify(result)).not.toContain('candidate@example.test');
+    expect(vi.mocked(console.debug).mock.calls).toEqual(Array.from({ length: 6 }, () =>
+      [['GCP_PRIVATE_ACCEPT_ENTERED'], ['GCP_PRIVATE_ACCEPTED']]).flat());
     await expect(session(run, 0)).rejects.toThrow();
   });
   it('rejects reveals, partial hashes and oversized transcripts on the default path', () => {
@@ -109,6 +111,9 @@ describe('GCP private witness stays in its offscreen execution', () => {
     expect(() => run.begin({ ...data, step: 'identity' }, native.host, false)).toThrow();
     const r = receipt();
     await expect(run.accept(proofId, native.host, bytes(), bytes(), r.openings, r.response)).rejects.toThrow();
+    expect(vi.mocked(console.debug).mock.calls).toEqual([
+      ['GCP_PRIVATE_ACCEPT_ENTERED'], ['GCP_PRIVATE_ACCEPT_FAILED_PRECONDITION'],
+    ]);
     await expect(run.finish()).rejects.toThrow(); run.clear();
   });
   it('freezes copied selective plans and maps reordered openings by native digest', async () => {
@@ -146,25 +151,49 @@ describe('GCP private witness stays in its offscreen execution', () => {
     }
   });
   it('rejects wrong blinder, wrong plaintext, result order, hash, direction, algorithm and missing/duplicate openings', async () => {
-    const changes: Array<(r: ReturnType<typeof receipt>) => void> = [
-      r => { r.openings.sent[0].blinder[0] ^= 1; },
-      r => { r.response.results[0].value = 'wrong'; },
-      r => { [r.response.results[1], r.response.results[3]] = [r.response.results[3], r.response.results[1]]; },
-      r => { r.response.results[1].value = 'ff'.repeat(32); },
-      r => { r.response.results[1].type = 'RECV'; },
-      r => { r.response.results[1].action = { kind: 'HASH', algorithm: 'BLAKE3' } as never; },
-      r => { r.openings.sent.pop(); },
-      r => { r.openings.sent[1] = r.openings.sent[0]; },
+    const changes: Array<[string, (r: ReturnType<typeof receipt>) => void]> = [
+      ['COMMITMENT_MATCH', r => { r.openings.sent[0].blinder[0] ^= 1; }],
+      ['REVEAL_MATCH', r => { r.response.results[0].value = 'wrong'; }],
+      ['COMMITMENT_MATCH', r => { [r.response.results[1], r.response.results[3]] = [r.response.results[3], r.response.results[1]]; }],
+      ['OPENING_LOOKUP', r => { r.response.results[1].value = 'ff'.repeat(32); }],
+      ['RESULT_SHAPE', r => { r.response.results[1].type = 'RECV'; }],
+      ['OPENING_LOOKUP', r => { r.response.results[1].action = { kind: 'HASH', algorithm: 'BLAKE3' } as never; }],
+      ['OPENINGS', r => { r.openings.sent.pop(); }],
+      ['OPENINGS', r => { r.openings.sent[1] = r.openings.sent[0]; }],
     ];
-    for (const change of changes) {
+    for (const [stage, change] of changes) {
+      vi.mocked(console.debug).mockClear();
       const run = new GcpPrivateWitnessRun(data, proofId, { ...module(), getRevealPlan: selectivePlan });
       const { id, host, chosen } = await prepare(run), native = receipt(chosen); change(native);
       await expect(run.accept(id, host, bytes(), bytes(), native.openings, native.response)).rejects.toThrow();
+      expect(vi.mocked(console.debug).mock.calls).toEqual([
+        ['GCP_PRIVATE_ACCEPT_ENTERED'], [`GCP_PRIVATE_ACCEPT_FAILED_${stage}`],
+      ]);
       run.clear(); clearGcpOpenings(native.openings);
     }
     const run = new GcpPrivateWitnessRun(data, proofId, { ...module(), getRevealPlan: selectivePlan });
     const { id, host, chosen } = await prepare(run), native = receipt(chosen), changed = bytes(); changed[1] ^= 1;
     await expect(run.accept(id, host, changed, bytes(), native.openings, native.response)).rejects.toThrow(); run.clear();
+  });
+  it('never inspects a caught value and preserves the original identity failure', async () => {
+    const thrown = new Proxy({}, { get() { throw new Error('private error property'); } });
+    const run = new GcpPrivateWitnessRun(data, proofId, { ...module(), identityEmail() { throw thrown; } });
+    const { id, host, chosen } = await prepare(run), native = receipt(chosen);
+    await expect(run.accept(id, host, bytes(), bytes(), native.openings, native.response)).rejects.toBe(thrown);
+    expect(vi.mocked(console.debug).mock.calls).toEqual([
+      ['GCP_PRIVATE_ACCEPT_ENTERED'], ['GCP_PRIVATE_ACCEPT_FAILED_IDENTITY'],
+    ]);
+    run.clear(); clearGcpOpenings(native.openings);
+  });
+  it('does not let failed diagnostic logging change acceptance or the original error', async () => {
+    vi.mocked(console.debug).mockImplementation(() => { throw new Error('console unavailable'); });
+    const run = new GcpPrivateWitnessRun(data, proofId, module());
+    expect(await session(run, 0)).toHaveProperty('privateAccountEmail', 'candidate@example.test');
+    run.clear();
+    const thrown = new Error('private identity detail');
+    const failing = new GcpPrivateWitnessRun(data, proofId, { ...module(), identityEmail() { throw thrown; } });
+    await expect(session(failing, 0)).rejects.toBe(thrown);
+    failing.clear();
   });
   it('erases witness copies after local proof failure', async () => {
     let held: Uint8Array[] = [];

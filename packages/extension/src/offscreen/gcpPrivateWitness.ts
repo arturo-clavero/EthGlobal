@@ -43,6 +43,12 @@ const PARTS = ['START_LINE', 'PROTOCOL', 'METHOD', 'REQUEST_TARGET', 'STATUS_COD
 // Local proving can exceed nine minutes; keep its limit inside the 13-minute route.
 // The 15-minute nonce still bounds freshness, including server-side verification.
 const PROVE_TIMEOUT_MS = 11 * 60 * 1000;
+type AcceptStage = 'PRECONDITION' | 'OPENINGS' | 'RESULT_SHAPE' | 'REVEAL_MATCH' |
+  'OPENING_LOOKUP' | 'COMMITMENT_MATCH' | 'IDENTITY';
+export function gcpPrivateDiagnostic(code: 'ACCEPT_ENTERED' | 'ACCEPTED' | `ACCEPT_FAILED_${AcceptStage}` |
+  'EXECUTE_FAILED' | 'HEARTBEAT_NOT_OK' | 'HEARTBEAT_REJECTED'): void {
+  try { console.debug(`GCP_PRIVATE_${code}`); } catch { /* Diagnostics must not affect cleanup or the original error. */ }
+}
 function fail(): never { throw new Error('GCP_PRIVATE_PROOF_INVALID'); }
 const hex = (bytes: Uint8Array) => Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
 
@@ -158,71 +164,86 @@ export class GcpPrivateWitnessRun {
   }
   async accept(sessionId: string | null, serverName: string, sent: Uint8Array, recv: Uint8Array,
     openings: RevealOutput, response: { results: unknown[] } | null) {
-    const selection = this.selection;
-    if (this.closed || !selection || this.activeHost !== serverName || !sessionId || !UUID.test(sessionId) ||
-        (this.activeSessionId !== undefined && this.activeSessionId !== sessionId) ||
-        this.witnesses.some(w => w.sessionId === sessionId) || !Array.isArray(response?.results) ||
-        response.results.length !== selection.sentRangesWithHandlers.length + selection.recvRangesWithHandlers.length) fail();
-    const witness: GcpPrivateWitness = Object.freeze({ sessionId, serverName, step: STEPS[this.witnesses.length],
-      proofId: this.run.proofId, nonceMac: this.nonceMac!, sent: sent.slice(), recv: recv.slice(),
-      selections: { sent: selection.sentRangesWithHandlers, recv: selection.recvRangesWithHandlers },
-      openings: { sent: [] as Opening[], recv: [] as Opening[] } });
-    // Own every copy before an asynchronous check or local parser can fail.
-    this.witnesses.push(witness);
-    const results: Array<{ type: string; part: string; action: unknown; value: string }> = [];
-    let index = 0;
-    for (const [direction, bytes, ranges, source, held] of [
-      ['SENT', witness.sent, witness.selections.sent, openings.sent, witness.openings.sent],
-      ['RECV', witness.recv, witness.selections.recv, openings.recv, witness.openings.recv],
-    ] as const) {
-      if (!Array.isArray(source) || source.length !== ranges.filter(r => canonicalizeHandler(r.handler).action.kind === 'HASH').length ||
-          ranges[ranges.length - 1].end !== bytes.length) fail();
-      const byDigest = new Map<string, Opening>();
-      for (const opening of source) {
-        validateOpening(opening);
-        const copy = { start: 0, end: 0, hash: Uint8Array.from(opening.hash), blinder: Uint8Array.from(opening.blinder) };
-        held.push(copy);
-        const digest = hex(copy.hash);
-        if (byDigest.has(digest)) fail();
-        byDigest.set(digest, copy);
-      }
-      // Native session_completed omits config. It returns process_ranges(sent), then recv,
-      // in submitted config order. The server must independently validate webhook config/ranges.
-      for (const range of ranges) {
-        const handler = canonicalizeHandler(range.handler);
-        const result = response.results[index++] as { type?: unknown; part?: unknown;
-          action?: { kind?: unknown; algorithm?: unknown }; value?: unknown } | null;
-        if (!result || result.type !== direction || result.part !== handler.part ||
-            result.action?.kind !== handler.action.kind || typeof result.value !== 'string') fail();
-        if (handler.action.kind === 'REVEAL') {
-          if (result.action.algorithm !== undefined || result.value !==
-              new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes.subarray(range.start, range.end))) fail();
-        } else {
-          if (result.action.algorithm !== 'SHA256' || !HEX.test(result.value)) fail();
-          const opening = byDigest.get(result.value);
-          if (!opening) fail();
-          opening.start = range.start; opening.end = range.end;
-          const preimage = new Uint8Array(range.end - range.start + 16);
-          try {
-            preimage.set(bytes.subarray(range.start, range.end)); preimage.set(opening.blinder, range.end - range.start);
-            const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', preimage.buffer));
-            const matches = hex(digest) === result.value; digest.fill(0);
-            if (this.closed || !matches) fail();
-          } finally { preimage.fill(0); }
-          byDigest.delete(result.value);
+    let stage: AcceptStage = 'PRECONDITION';
+    gcpPrivateDiagnostic('ACCEPT_ENTERED');
+    try {
+      const selection = this.selection;
+      if (this.closed || !selection || this.activeHost !== serverName || !sessionId || !UUID.test(sessionId) ||
+          (this.activeSessionId !== undefined && this.activeSessionId !== sessionId) ||
+          this.witnesses.some(w => w.sessionId === sessionId) || !Array.isArray(response?.results) ||
+          response.results.length !== selection.sentRangesWithHandlers.length + selection.recvRangesWithHandlers.length) fail();
+      const witness: GcpPrivateWitness = Object.freeze({ sessionId, serverName, step: STEPS[this.witnesses.length],
+        proofId: this.run.proofId, nonceMac: this.nonceMac!, sent: sent.slice(), recv: recv.slice(),
+        selections: { sent: selection.sentRangesWithHandlers, recv: selection.recvRangesWithHandlers },
+        openings: { sent: [] as Opening[], recv: [] as Opening[] } });
+      // Own every copy before an asynchronous check or local parser can fail.
+      this.witnesses.push(witness);
+      const results: Array<{ type: string; part: string; action: unknown; value: string }> = [];
+      let index = 0;
+      for (const [direction, bytes, ranges, source, held] of [
+        ['SENT', witness.sent, witness.selections.sent, openings.sent, witness.openings.sent],
+        ['RECV', witness.recv, witness.selections.recv, openings.recv, witness.openings.recv],
+      ] as const) {
+        stage = 'OPENINGS';
+        if (!Array.isArray(source) || source.length !== ranges.filter(r => canonicalizeHandler(r.handler).action.kind === 'HASH').length ||
+            ranges[ranges.length - 1].end !== bytes.length) fail();
+        const byDigest = new Map<string, Opening>();
+        for (const opening of source) {
+          validateOpening(opening);
+          const copy = { start: 0, end: 0, hash: Uint8Array.from(opening.hash), blinder: Uint8Array.from(opening.blinder) };
+          held.push(copy);
+          const digest = hex(copy.hash);
+          if (byDigest.has(digest)) fail();
+          byDigest.set(digest, copy);
         }
-        results.push({ type: direction, part: handler.part, action: handler.action.kind === 'HASH'
-          ? { kind: 'HASH', algorithm: 'SHA256' } : { kind: 'REVEAL' }, value: result.value });
+        // Native session_completed omits config. It returns process_ranges(sent), then recv,
+        // in submitted config order. The server must independently validate webhook config/ranges.
+        for (const range of ranges) {
+          stage = 'RESULT_SHAPE';
+          const handler = canonicalizeHandler(range.handler);
+          const result = response.results[index++] as { type?: unknown; part?: unknown;
+            action?: { kind?: unknown; algorithm?: unknown }; value?: unknown } | null;
+          if (!result || result.type !== direction || result.part !== handler.part ||
+              result.action?.kind !== handler.action.kind || typeof result.value !== 'string') fail();
+          if (handler.action.kind === 'REVEAL') {
+            stage = 'REVEAL_MATCH';
+            if (result.action.algorithm !== undefined || result.value !==
+                new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes.subarray(range.start, range.end))) fail();
+          } else {
+            stage = 'OPENING_LOOKUP';
+            if (result.action.algorithm !== 'SHA256' || !HEX.test(result.value)) fail();
+            const opening = byDigest.get(result.value);
+            if (!opening) fail();
+            opening.start = range.start; opening.end = range.end;
+            stage = 'COMMITMENT_MATCH';
+            const preimage = new Uint8Array(range.end - range.start + 16);
+            try {
+              preimage.set(bytes.subarray(range.start, range.end)); preimage.set(opening.blinder, range.end - range.start);
+              const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', preimage.buffer));
+              const matches = hex(digest) === result.value; digest.fill(0);
+              if (this.closed || !matches) fail();
+            } finally { preimage.fill(0); }
+            byDigest.delete(result.value);
+          }
+          results.push({ type: direction, part: handler.part, action: handler.action.kind === 'HASH'
+            ? { kind: 'HASH', algorithm: 'SHA256' } : { kind: 'REVEAL' }, value: result.value });
+        }
+        stage = 'OPENINGS';
+        if (byDigest.size) fail();
+        held.sort((a, b) => a.start - b.start);
       }
-      if (byDigest.size) fail();
-      held.sort((a, b) => a.start - b.start);
+      this.activeHost = undefined; this.activeSessionId = undefined; this.selection = undefined;
+      if (witness.step !== 'identity') { gcpPrivateDiagnostic('ACCEPTED'); return { results }; }
+      stage = 'IDENTITY';
+      const email = this.module.identityEmail(witness);
+      if (typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
+          email.toLowerCase().endsWith('.gserviceaccount.com')) fail();
+      gcpPrivateDiagnostic('ACCEPTED');
+      return { results, privateAccountEmail: email };
+    } catch (error) {
+      gcpPrivateDiagnostic(`ACCEPT_FAILED_${stage}`);
+      throw error;
     }
-    this.activeHost = undefined; this.activeSessionId = undefined; this.selection = undefined;
-    if (witness.step !== 'identity') return { results };
-    const email = this.module.identityEmail(witness);
-    if (typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
-        email.toLowerCase().endsWith('.gserviceaccount.com')) fail();
-    return { results, privateAccountEmail: email };
   }
   async finish() {
     if (this.closed || this.activeHost || this.witnesses.length !== STEPS.length) fail();
