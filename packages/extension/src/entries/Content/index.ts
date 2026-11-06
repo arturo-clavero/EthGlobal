@@ -5,14 +5,22 @@ import { logger, LogLevel } from '@tlsn/common';
 import { isProductOrigin } from '../../constants/productOrigins';
 import { sanitizePageProgress } from '../../constants/pageProgress';
 import { BUILTIN_PLUGINS } from '../../constants/builtinPlugins';
+import { readConsoleCredentials } from './awsPrivateCredentials';
+import { watchGcpProofProgress } from './gcpProofWatchdog';
 
 // Initialize logger at DEBUG level for content scripts (no IndexedDB access)
 logger.init(LogLevel.DEBUG);
-logger.debug('Content script loaded on:', window.location.href);
+logger.debug('Content script loaded');
 
 // Only allowed origins see our extension ID and get
 // helperStatus answers (constants/productOrigins.ts, build-time list).
 const PRODUCT_PAGE = isProductOrigin(window.location.origin);
+const pendingPrivateRuns = new Map<string, { timer: ReturnType<typeof setTimeout>; error: string }>();
+const finishPrivateRun = (requestId: string) => {
+  const pending = pendingPrivateRuns.get(requestId);
+  if (pending === undefined) return undefined;
+  clearTimeout(pending.timer); pendingPrivateRuns.delete(requestId); return pending;
+};
 
 // Inject a script into the page if needed
 function injectScript() {
@@ -34,7 +42,11 @@ function injectScript() {
   script.onload = () => script.remove();
 }
 
+let stopGcpProofWatchdog: (() => void) | undefined;
+
 function renderPluginUI(json: DomJson, windowId: number) {
+  stopGcpProofWatchdog?.();
+  stopGcpProofWatchdog = undefined;
   let container = document.getElementById('tlsn-plugin-container');
 
   if (!container) {
@@ -51,7 +63,11 @@ function renderPluginUI(json: DomJson, windowId: number) {
     prev && prev.style.bottom === 'auto' ? { top: prev.style.top, left: prev.style.left } : null;
 
   container.innerHTML = '';
-  container.appendChild(createNode(json, windowId));
+  const panel = createNode(json, windowId);
+  container.appendChild(panel);
+  if (panel instanceof HTMLElement && panel.id === 'gcp-private-proof-progress') {
+    stopGcpProofWatchdog = watchGcpProofProgress(panel);
+  }
 
   if (savedPosition) {
     const el = container.querySelector('[data-tlsn-draggable]') as HTMLElement | null;
@@ -206,9 +222,24 @@ function createNode(json: DomJson, windowId: number): HTMLElement | Text {
 }
 
 // Listen for messages from the extension
-browser.runtime.onMessage.addListener((msg: unknown) => {
+browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.MessageSender) => {
+  if ((msg as { type?: unknown })?.type === 'AWS_PRIVATE_CONSOLE_CREDENTIALS') {
+    return readConsoleCredentials(msg, sender, { extensionId: browser.runtime.id,
+      backgroundUrl: browser.runtime.getURL('background.bundle.js'), origin: window.location.origin, top: window.top === window });
+  }
+  const completion = msg as { type?: string; requestId?: unknown; success?: unknown; result?: unknown };
+  if (completion?.type === 'RUN_BUILTIN_COMPLETE') {
+    if (!PRODUCT_PAGE || sender.id !== browser.runtime.id || sender.tab !== undefined ||
+        (sender.url && sender.url !== browser.runtime.getURL('background.bundle.js')) ||
+        typeof completion.requestId !== 'string') return;
+    const pending = finishPrivateRun(completion.requestId);
+    if (!pending) return;
+    window.postMessage({ type: 'TLSN_RUN_BUILTIN_RESPONSE', requestId: completion.requestId,
+      ...(completion.success === true ? { success: true, result: completion.result } :
+        { success: false, error: pending.error }) }, window.location.origin);
+    return;
+  }
   const request = msg as ContentMessage;
-  logger.debug('Content script received message:', request);
 
   // Forward offscreen logs to page
   if (request.type === 'OFFSCREEN_LOG') {
@@ -293,7 +324,6 @@ window.addEventListener('message', (event) => {
 
   // Handle TLSN window.tlsn.open() calls
   if (event.data?.type === 'TLSN_OPEN_WINDOW') {
-    logger.debug('[Content Script] Received TLSN_OPEN_WINDOW request:', event.data.payload);
 
     // Forward to background script with OPEN_WINDOW type
     browser.runtime
@@ -342,8 +372,23 @@ window.addEventListener('message', (event) => {
         { type: 'TLSN_RUN_BUILTIN_RESPONSE', requestId, ...body },
         window.location.origin,
       );
-    browser.runtime
-      .sendMessage({
+    const privateRun = p.pluginId === 'gcp-work' || p.pluginId === 'aws-private-work';
+    const privateError = p.pluginId === 'aws-private-work' ? 'AWS_PRIVATE_PROVING_FAILED' : 'GCP_PRIVATE_PROVING_FAILED';
+    if (privateRun && requestId && PRODUCT_PAGE) {
+      if (pendingPrivateRuns.has(requestId)) return;
+      pendingPrivateRuns.set(requestId, { error: privateError, timer: setTimeout(() => {
+        if (finishPrivateRun(requestId)) reply({ success: false, error: privateError });
+      }, 13 * 60 * 1000) });
+    }
+    const connected = privateRun ? (async () => {
+      try {
+        const pong = await browser.runtime.sendMessage({ type: 'PING' });
+        if (!pong || typeof pong !== 'object' || !('type' in pong) || pong.type !== 'PONG') throw new Error();
+      } catch { throw new Error('EXTENSION_CONNECTION_LOST'); }
+      window.postMessage({ type: 'TLSN_RUN_BUILTIN_ACK', requestId }, window.location.origin);
+    })() : Promise.resolve();
+    connected
+      .then(() => browser.runtime.sendMessage({
         type: 'RUN_BUILTIN',
         pluginId: p.pluginId,
         fingerprint: p.fingerprint,
@@ -353,9 +398,11 @@ window.addEventListener('message', (event) => {
         methodUrls: p.methodUrls,
         requestId: p.requestId,
         sessionData: p.sessionData,
-      })
+      }))
       .then((msg) => {
-        const response = msg as ExecCodeResponse;
+        const response = msg as ExecCodeResponse & { pending?: boolean };
+        if (privateRun && response?.success === true && response.pending === true) return;
+        finishPrivateRun(requestId);
         if (response && response.success === true) {
           reply({ success: true, result: response.result });
         } else {
@@ -363,8 +410,14 @@ window.addEventListener('message', (event) => {
         }
       })
       .catch((error) => {
-        logger.error('[Content Script] Failed to run the built-in plugin:', error);
-        reply({ success: false, error: error?.message || 'Code execution failed' });
+        finishPrivateRun(requestId);
+        if (p.pluginId === 'gcp-work') {
+          try { console.debug('GCP_PRIVATE_CONTENT_SEND_FAILED'); } catch { /* Preserve the generic failure reply. */ }
+        }
+        if (!privateRun) logger.error('[Content Script] Failed to run the built-in plugin:', error);
+        reply({ success: false, error: privateRun
+          ? error?.message === 'EXTENSION_CONNECTION_LOST' ? 'EXTENSION_CONNECTION_LOST' : privateError
+          : error?.message || 'Code execution failed' });
       });
     return;
   }

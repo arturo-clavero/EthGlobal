@@ -177,10 +177,11 @@ describe('page progress: background and content script gates', () => {
   it('Background marks the route only for an approved run and forwards only on a marked route', () => {
     const bg = src('entries/Background/index.ts');
     expect(bg).toMatch(
-      /if \(!approval\.ok\) \{[\s\S]{0,200}?return Promise\.resolve\(\{ success: false, error: approval\.error \}\);\s*\}[\s\S]{0,600}?progressRoutes\.set\(requestId, \{[\s\S]{0,120}?pageProgress: true,/,
+      /if \(!approval\.ok\) \{[\s\S]{0,200}?return Promise\.resolve\(\{ success: false, error: approval\.error \}\);\s*\}[\s\S]*?progressRoutes\.set\(requestId, \{[\s\S]{0,120}?pageProgress: true,/,
     );
+    expect(bg).toContain("(route?.gcpPrivate || route?.awsPrivate) && !livePrivateRoute(request.requestId, sender, progressRoutes, privateDeps, route.awsPrivate ? 'aws' : 'gcp')");
     expect(bg).toMatch(
-      /request\.type === 'PLUGIN_PROGRESS'\) \{\s*const route = progressRoutes\.get\(request\.requestId\);\s*if \(route\?\.pageProgress\) \{/,
+      /request\.type === 'PLUGIN_PROGRESS'\) \{\s*const route = progressRoutes\.get\(request\.requestId\);[\s\S]*?if \(route\?\.pageProgress\) \{/,
     );
   });
 

@@ -1,0 +1,12 @@
+{
+  "name": "@tlsn-private-proof/aws",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test --test-concurrency=1"
+  },
+  "dependencies": {
+    "@aztec/bb.js": "4.2.0-aztecnr-rc.2"
+  }
+}

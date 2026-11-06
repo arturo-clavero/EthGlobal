@@ -1693,6 +1693,17 @@ export function extractPluginExports(code: string): { stripped: string; entries:
     };
   }
 
+  // Bundlers export an object alias; its functions still need prototype-free wrappers.
+  const aliasExport = /export\s*\{\s*([A-Za-z_$][\w$]*)\s+as\s+default\s*\}\s*;?\s*$/;
+  const aliasMatch = code.match(aliasExport);
+  if (aliasMatch) {
+    return {
+      stripped: code.replace(aliasExport, ''),
+      entries: `...Object.fromEntries(Object.entries(${aliasMatch[1]}).map(([key, value]) =>
+        [key, typeof value === 'function' ? (...args) => value(...args) : value]))`,
+    };
+  }
+
   return null;
 }
 

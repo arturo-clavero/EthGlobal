@@ -84,7 +84,7 @@ describe('plugin sha256 in the session data', () => {
     const SRC = path.resolve(__dirname, '../../src');
     const offscreen = readFileSync(path.join(SRC, 'entries/Offscreen/index.tsx'), 'utf8');
     expect(offscreen).toMatch(
-      /sm\.executePlugin\(\s*prepared\.code,\s*request\.requestId \?\? undefined,[\s\S]{0,200}?runSessionData\(request\.sessionData, prepared\.sha256\),\s*\)/,
+      /sm\.executePlugin\(\s*prepared\.code,\s*request\.requestId \?\? undefined,[\s\S]{0,200}?runSessionData\(request\.sessionData, prepared\.sha256\),\s*privateModule\)/,
     );
     const sm = readFileSync(path.join(SRC, 'offscreen/SessionManager.ts'), 'utf8');
     expect(sm).toMatch(

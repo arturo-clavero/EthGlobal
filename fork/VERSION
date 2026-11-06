@@ -1,0 +1,4 @@
+# The upstream tlsnotary/tlsn-extension release this fork is based on (a record; the repository root is that
+# release with the fork's changes applied). The TLSNotary core pins live in core/VERSION.
+TLSN_EXTENSION_TAG=0.1.0.1501
+TLSN_EXTENSION_COMMIT=68bbd380d6e1a89d79748e5294661c752f5d1205

@@ -1,0 +1,6 @@
+[package]
+name = "aws_private_json"
+type = "lib"
+
+[dependencies]
+gcp_private_json = { path = "../../../gcp/circuits/lib" }

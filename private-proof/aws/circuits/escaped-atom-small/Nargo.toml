@@ -1,0 +1,7 @@
+[package]
+name = "aws_private_escaped_atom_small"
+type = "bin"
+
+[dependencies]
+aws_private_json = { path = "../lib" }
+gcp_private_json = { path = "../../../gcp/circuits/lib" }

@@ -1,0 +1,87 @@
+{
+  "compiler": "1.0.0-beta.19+74d6be658e1ad252f87943292ba09bdd4da80bd4",
+  "backend": "4.2.0-aztecnr-rc.2",
+  "verifierTarget": "noir-recursive",
+  "circuits": {
+    "header-v1": {
+      "file": "header-v1-29bc0c9cb807a7ffee3c3d09f527394e957ec55971da154a8b4a8e6b09b16beb.json",
+      "sha256": "29bc0c9cb807a7ffee3c3d09f527394e957ec55971da154a8b4a8e6b09b16beb",
+      "bytes": 848779,
+      "keyFile": "header-v1-4be5de7d7ccac19e0127b2417e93b13b68d9518403f7f0e435bcdc26a18a9a5c.vk",
+      "keySha256": "4be5de7d7ccac19e0127b2417e93b13b68d9518403f7f0e435bcdc26a18a9a5c",
+      "keyBytes": 3680
+    },
+    "atom-v1": {
+      "file": "atom-v1-db3b8da3c47168a4f55c1f5aab21256fa112c5dfd3b6185459dae3e4235bb95b.json",
+      "sha256": "db3b8da3c47168a4f55c1f5aab21256fa112c5dfd3b6185459dae3e4235bb95b",
+      "bytes": 2217108,
+      "keyFile": "atom-v1-e65c874c58127f4000f2530fa72e321579622759f04e962ebbc6137aa9e409f6.vk",
+      "keySha256": "e65c874c58127f4000f2530fa72e321579622759f04e962ebbc6137aa9e409f6",
+      "keyBytes": 3680
+    },
+    "headers-small-v1": {
+      "file": "headers-small-v1-7128186d7c08f3883405704d59caf494f0c7f38c056114636da0eafa07628655.json",
+      "sha256": "7128186d7c08f3883405704d59caf494f0c7f38c056114636da0eafa07628655",
+      "bytes": 426970,
+      "keyFile": "headers-small-v1-310a4fa7be2bc8b67e902b9cafb043543c2dd83eb0ceaa5d6f27fe14eae562f4.vk",
+      "keySha256": "310a4fa7be2bc8b67e902b9cafb043543c2dd83eb0ceaa5d6f27fe14eae562f4",
+      "keyBytes": 3680
+    },
+    "atoms-small-v1": {
+      "file": "atoms-small-v1-afc14f76de5d1d2b7a384706c1eff8056045a890ca1b6a18f227804ae07f738f.json",
+      "sha256": "afc14f76de5d1d2b7a384706c1eff8056045a890ca1b6a18f227804ae07f738f",
+      "bytes": 2226826,
+      "keyFile": "atoms-small-v1-dee0fa1efaaa6752652c662098b367fbeb47ec64538303e057f7657806945390.vk",
+      "keySha256": "dee0fa1efaaa6752652c662098b367fbeb47ec64538303e057f7657806945390",
+      "keyBytes": 3680
+    },
+    "aws-escaped-atom-v1": {
+      "file": "aws-escaped-atom-v1-cd44a255587051eb8ebdce1af934bdce9a09f0eb7b94acbcaabfc70ef1fbb3b2.json",
+      "sha256": "cd44a255587051eb8ebdce1af934bdce9a09f0eb7b94acbcaabfc70ef1fbb3b2",
+      "bytes": 2501919,
+      "keyFile": "aws-escaped-atom-v1-2e3abe7a498cb489b97f5e9ffc3c8956f9511b2ca1b22fba091ff0aa23601737.vk",
+      "keySha256": "2e3abe7a498cb489b97f5e9ffc3c8956f9511b2ca1b22fba091ff0aa23601737",
+      "keyBytes": 3680
+    },
+    "aws-xml-text-v1": {
+      "file": "aws-xml-text-v1-fa698dad69bdb2ff496b499ded4e51c7a236eb748d21a996430fd0cc06425481.json",
+      "sha256": "fa698dad69bdb2ff496b499ded4e51c7a236eb748d21a996430fd0cc06425481",
+      "bytes": 215060,
+      "keyFile": "aws-xml-text-v1-c91d9ca2b64adc6485ab660e421b7829d1d101b01d531fcfb7d7339c6201b5e0.vk",
+      "keySha256": "c91d9ca2b64adc6485ab660e421b7829d1d101b01d531fcfb7d7339c6201b5e0",
+      "keyBytes": 3680
+    },
+    "aws-identity-link-v1": {
+      "file": "aws-identity-link-v1-7ae820a63f707ba05570ac1cb653ec9a487d9c7e07594be1bd64f4ebdb4b7566.json",
+      "sha256": "7ae820a63f707ba05570ac1cb653ec9a487d9c7e07594be1bd64f4ebdb4b7566",
+      "bytes": 617047,
+      "keyFile": "aws-identity-link-v1-ad3fc7dd98c5288aff7f39fcf8d683c49ef2803e9ac60bf45fd3070d3d610608.vk",
+      "keySha256": "ad3fc7dd98c5288aff7f39fcf8d683c49ef2803e9ac60bf45fd3070d3d610608",
+      "keyBytes": 3680
+    },
+    "aws-event-link-v1": {
+      "file": "aws-event-link-v1-c28815dcff2d0931dcb12ee1308460d3a1eeb7eba5983f81ed919b0f6018ead0.json",
+      "sha256": "c28815dcff2d0931dcb12ee1308460d3a1eeb7eba5983f81ed919b0f6018ead0",
+      "bytes": 3223920,
+      "keyFile": "aws-event-link-v1-80c30c2b69c1b18b30f6fa77130b18c1096635950bcf0a197a3c49b3c124c586.vk",
+      "keySha256": "80c30c2b69c1b18b30f6fa77130b18c1096635950bcf0a197a3c49b3c124c586",
+      "keyBytes": 3680
+    },
+    "aws-escaped-atoms-small-v1": {
+      "file": "aws-escaped-atoms-small-v1-753645be5a89fd5ce7c62beb827df45c1521a06d55278de2c9ea4b7256c00c08.json",
+      "sha256": "753645be5a89fd5ce7c62beb827df45c1521a06d55278de2c9ea4b7256c00c08",
+      "bytes": 2548174,
+      "keyFile": "aws-escaped-atoms-small-v1-dbd897d01314469916376cbf76fe780ec14368ad38f3044b5dc886f5296fe2ff.vk",
+      "keySha256": "dbd897d01314469916376cbf76fe780ec14368ad38f3044b5dc886f5296fe2ff",
+      "keyBytes": 3680
+    },
+    "aws-escaped-atom-small-v1": {
+      "file": "aws-escaped-atom-small-v1-afc47244dd258d33370f3a8c1ec8d5d2771e8dfb9e4996d9516eb5cddb6dbca2.json",
+      "sha256": "afc47244dd258d33370f3a8c1ec8d5d2771e8dfb9e4996d9516eb5cddb6dbca2",
+      "bytes": 319337,
+      "keyFile": "aws-escaped-atom-small-v1-86ad6eddecac6ec80724a173bfebeeb163ab0a191b5e29b40ab664cec5eb8010.vk",
+      "keySha256": "86ad6eddecac6ec80724a173bfebeeb163ab0a191b5e29b40ab664cec5eb8010",
+      "keyBytes": 3680
+    }
+  }
+}
