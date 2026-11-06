@@ -193,8 +193,8 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
   // the run, only when that run was auto-approved. The fields were checked
   // where the report was made (offscreen) and are checked again where it is
   // posted to the page (content script, allowed origins only).
-  // A trusted plugin's "Switch account" → its own window to
-  // GitHub's logout/login/switcher only (exact URLs), for an auto-approved run,
+  // A trusted plugin's "Switch account" → the run's own window to an allowlisted
+  // exact URL (configured at build time) only, for an auto-approved run,
   // from our offscreen document; any doubt refuses (constants/pluginNavigate.ts).
   if (request.type === 'PLUGIN_NAVIGATE') {
     const target = pluginNavigateTarget(request, sender, {

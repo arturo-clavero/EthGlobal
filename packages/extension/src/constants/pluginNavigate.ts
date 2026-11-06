@@ -6,12 +6,38 @@
  * Only runs that autoApprovalFor() approved get the capability (an allowlisted plugin, top frame of an allowed-origin
  * tab; decided in the background, fail closed), and the background checks the URL, the sender (our offscreen
  * document), the run (an auto-approved route) and the window (a managed one) again before it navigates.
+ *
+ * Build-time list: build.sh passes FORK_NAVIGATE_URLS (comma-separated exact https URLs) to webpack as
+ * __FORK_NAVIGATE_URLS__. No list (the default) means no navigation target (fail closed).
  */
-export const PLUGIN_NAVIGATE_URLS: readonly string[] = Object.freeze([
-  'https://github.com/logout',
-  'https://github.com/login',
-  'https://github.com/switch_account',
-]);
+declare const __FORK_NAVIGATE_URLS__: string | undefined;
+
+/**
+ * Parses a comma-separated URL list. Keeps exact https URLs only (already in canonical form, no userinfo, query or
+ * fragment); anything else is dropped.
+ */
+export function parseNavigateUrls(csv: string): string[] {
+  const out: string[] = [];
+  for (const raw of csv.split(',')) {
+    const value = raw.trim();
+    if (!value) continue;
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      continue;
+    }
+    if (url.href !== value || url.protocol !== 'https:') continue;
+    if (url.username || url.password || url.search || url.hash || value.includes('?') || value.includes('#'))
+      continue;
+    if (!out.includes(value)) out.push(value);
+  }
+  return out;
+}
+
+export const PLUGIN_NAVIGATE_URLS: readonly string[] = Object.freeze(
+  parseNavigateUrls(typeof __FORK_NAVIGATE_URLS__ === 'string' ? __FORK_NAVIGATE_URLS__ : ''),
+);
 
 /** `url` itself when it is exactly one of PLUGIN_NAVIGATE_URLS; null for anything else. */
 export function allowedNavigation(url: unknown): string | null {

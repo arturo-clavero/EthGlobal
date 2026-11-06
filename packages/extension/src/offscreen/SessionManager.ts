@@ -502,8 +502,8 @@ export class SessionManager {
   private runWindows = new WeakMap<Host, number>();
 
   /**
-   * `navigate(url)` sends the run's own window to GitHub's
-   * logout/login/account switcher (constants/pluginNavigate.ts, exact URLs) so a wrong account can be switched without
+   * `navigate(url)` sends the run's own window to an allowlisted exact URL (configured at build time,
+   * constants/pluginNavigate.ts) so a wrong account can be switched without
    * leaving the run. Only for a run the background auto-approved (as reportProgress) with a requestId (the background
    * finds the run by it and checks it again). Returns false when refused; never throws into the plugin.
    */
