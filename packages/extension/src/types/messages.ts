@@ -36,6 +36,8 @@ export type BackgroundMessage =
     }
   // Offscreen → background, auto-approved runs only.
   | { type: 'PLUGIN_PROGRESS'; requestId: string; progress: unknown }
+  // Offscreen → background, auto-approved runs only (exact GitHub URLs).
+  | { type: 'PLUGIN_NAVIGATE'; requestId: string; windowId: number; url: string }
   | {
       type: 'EXEC_CODE';
       code: string;

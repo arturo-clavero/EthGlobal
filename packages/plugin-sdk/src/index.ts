@@ -161,6 +161,9 @@ const usePluginTimeout = env.usePluginTimeout;
 // Set only for auto-approved plugins on the embedding
 // pages (extension SessionManager); undefined elsewhere.
 const reportProgress = env.reportProgress;
+// Auto-approved plugins only; sends the run's own
+// window to GitHub's logout/login/account switcher (exact URLs). Undefined elsewhere.
+const navigate = env.navigate;
 ${processedCode};
 `;
 

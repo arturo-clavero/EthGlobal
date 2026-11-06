@@ -15,16 +15,21 @@
 export interface PageProgress {
   /** The check, e.g. EXAMPLE_WORK (upper-case key). */
   method: string;
-  status: 'running' | 'done' | 'busy' | 'failed';
+  /** `account` = the wrong account is signed in (the window waits for a switch). */
+  status: 'running' | 'done' | 'busy' | 'failed' | 'account';
   /** Steps finished so far. */
   index: number;
   /** Steps planned; 0 = not known in advance. */
   total: number;
   /** The step just finished, e.g. A2 or P3 (upper-case id). */
   step?: string;
+  /** `account` only: the signed-in account name (nothing else about the account). */
+  login?: string;
 }
 
-const STATUSES: ReadonlySet<string> = new Set(['running', 'done', 'busy', 'failed']);
+const STATUSES: ReadonlySet<string> = new Set(['running', 'done', 'busy', 'failed', 'account']);
+/** The signed-in account name, as the plugin reads it. */
+const LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
 const METHOD_RE = /^[A-Z][A-Z0-9_]{0,39}$/;
 const STEP_RE = /^[A-Z][A-Z0-9_]{0,15}$/;
 const count = (v: unknown): v is number =>
@@ -43,6 +48,11 @@ export function sanitizePageProgress(raw: unknown): PageProgress | null {
     index: r.index,
     total: r.total,
   };
+  // `account` carries only the signed-in login (no counts, no step); every other status never has a login.
+  if (out.status === 'account') {
+    if (typeof r.login !== 'string' || !LOGIN_RE.test(r.login)) return null;
+    return { method: out.method, status: 'account', index: 0, total: 0, login: r.login };
+  }
   if (typeof r.step === 'string' && STEP_RE.test(r.step)) out.step = r.step;
   return out;
 }

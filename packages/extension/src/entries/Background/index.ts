@@ -1,5 +1,7 @@
 import browser from 'webextension-polyfill';
 import { WindowManager } from '../../background/WindowManager';
+// The PLUGIN_NAVIGATE gate (kept apart from the helper set's import lines).
+import { pluginNavigateTarget } from '../../constants/pluginNavigate';
 import { confirmationManager } from '../../background/ConfirmationManager';
 import type { PluginConfig } from '@tlsn/plugin-sdk';
 import type { InterceptedRequest, InterceptedRequestHeader } from '../../types/window-manager';
@@ -171,6 +173,26 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
   // the run, only when that run was auto-approved. The fields were checked
   // where the report was made (offscreen) and are checked again where it is
   // posted to the page (content script, allowed origins only).
+  // A trusted plugin's "Switch account" → its own window to
+  // GitHub's logout/login/switcher only (exact URLs), for an auto-approved run,
+  // from our offscreen document; any doubt refuses (constants/pluginNavigate.ts).
+  if (request.type === 'PLUGIN_NAVIGATE') {
+    const target = pluginNavigateTarget(request, sender, {
+      extensionId: browser.runtime.id,
+      offscreenUrl: browser.runtime.getURL('offscreen.html'),
+      isAutoApprovedRun: (requestId) => progressRoutes.get(requestId)?.pageProgress === true,
+      tabOfWindow: (windowId) => windowManager.getWindow(windowId)?.tabId,
+    });
+    if (!target) {
+      logger.warn('PLUGIN_NAVIGATE refused');
+      return Promise.resolve({ ok: false });
+    }
+    return browser.tabs
+      .update(target.tabId, { url: target.url })
+      .then(() => ({ ok: true }))
+      .catch(() => ({ ok: false }));
+  }
+
   if (request.type === 'PLUGIN_PROGRESS') {
     const route = progressRoutes.get(request.requestId);
     if (route?.pageProgress) {

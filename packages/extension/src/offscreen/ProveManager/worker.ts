@@ -1,4 +1,5 @@
 import * as Comlink from 'comlink';
+import { sendRequestTimeoutMs } from '../../constants/sendTimeout';
 import type { Handler } from '@tlsn/plugin-sdk';
 import initWasm, {
   LoggingLevel,
@@ -328,8 +329,7 @@ async function setupProverRelay(
 /**
  * Sends an HTTP request through the prover via WebSocket proxy URL.
  */
-/** Default timeout for send request (60 seconds). */
-const SEND_REQUEST_TIMEOUT_MS = 60_000;
+/** 300 s in Proxy mode, 60 s (upstream) in MPC mode (constants/sendTimeout.ts). */
 
 async function sendRequest(
   proverId: string,
@@ -343,16 +343,14 @@ async function sendRequest(
   // session mux internally and rejects a server_io. MPC mode: open a
   // websockify channel to the target server and pass it as server_io.
   const serverIo = proxyUrl ? await createIoChannel(proxyUrl) : undefined;
+  const timeoutMs = sendRequestTimeoutMs(proxyUrl);
   try {
     await Promise.race([
       prover.send_request(serverIo, request),
       new Promise<never>((_, reject) =>
         setTimeout(
-          () =>
-            reject(
-              new Error(`sendRequest timed out after ${SEND_REQUEST_TIMEOUT_MS}ms for ${proverId}`),
-            ),
-          SEND_REQUEST_TIMEOUT_MS,
+          () => reject(new Error(`sendRequest timed out after ${timeoutMs}ms for ${proverId}`)),
+          timeoutMs,
         ),
       ),
     ]);
