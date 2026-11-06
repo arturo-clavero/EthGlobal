@@ -10,6 +10,45 @@
 >
 > Licensed like upstream: MIT or Apache-2.0, at your option. The upstream README follows.
 
+## CROPS
+
+- **Censorship resistance.** The fork's operator runs a TLSNotary verifier and holds an attestation signing key. If
+  either goes away, signed attestations and public proof bundles stay readable on Arkiv until they expire, and
+  [`verify/`](verify/) is a static page anyone can host. Anyone can run their own verifier from this repository.
+- **Open source.** MIT or Apache-2.0 ([`LICENSE-MIT`](LICENSE-MIT), [`LICENSE-APACHE`](LICENSE-APACHE)). Everything
+  builds from this repository: the extension with `npm run build:fork`; [`crops/`](crops/) and `verify/` are plain ES
+  modules with no build step.
+- **Privacy.** The provider sees an ordinary session from the user's browser. The verifier, in Proxy mode, sees the
+  user's IP address, the hosts contacted, timing and traffic sizes, and receives private values only as blinded hash
+  commitments. Arkiv, and anyone reading it, sees the coarse claim, the commitment, the signed attestation and, if
+  published, the public bundle: proofs and public inputs, which include blinded hashes, the lengths of hidden values
+  and the time cutoff, never transcripts or identifiers. World ID, if used, learns that a unique human acted for the
+  app; the per-job nullifier stays with the app. The verify page loads the Arkiv SDK from esm.sh and queries an Arkiv
+  RPC endpoint; both see the viewer's IP address and the commitment looked up.
+- **Security.** Attestations are Ed25519 signatures over a canonical commitment; signing keys live only in the
+  verifier's environment and public keys are listed in [`verify/keys.json`](verify/keys.json). Trust assumption: the
+  transcript is only as trustworthy as the TLSNotary verifier; anyone can run their own. The verify page checks the
+  signature, recomputes the commitment and the proof hash, and checks the claim against the proven public inputs
+  where they expose it; it does not yet re-run the zero-knowledge verifier, so proof validity rests on the signature.
+
+## Arkiv
+
+[`crops/pin-registry`](crops/pin-registry) writes to and reads from [Arkiv](https://docs.arkiv.network) (testnet
+Rabdi, chain id `7794095`, `https://rpc.rabdi.db-chain.testnet.arkiv.network`). It stores two entity types, owned by
+the writer's wallet: `tlsn-attestation` (attributes `commitment`, `provider`, `claim`, `verifierKeyId`; payload: the
+signed attestation) and `tlsn-bundle-part` (attributes `commitment`, `proofHash`, `index`, `count`; payload: up to
+120 KiB of the public bundle). Entities expire after 180 days by default (Arkiv's limit is about 182 days). Reading
+needs no key; writing needs a funded wallet key passed in from the environment. Open
+`verify/?commitment=<hex>` on any static host of this repository to check one.
+
+## World ID (optional)
+
+[`crops/personhood`](crops/personhood) adds a one-human-per-job check with World ID 4 (IDKit). The action is
+`apply:<jobId>` and the signal is a 64-hex value the app binds the proof to, such as the evidence commitment or a
+hash of its own application record. It asks only for proof-of-human or passport uniqueness,
+never passport attributes. The backend signs the request context and forwards the result unchanged to World's verify
+API; the nullifier it returns is stored privately and never published.
+
 <img src="packages/extension/src/assets/img/icon-128.png" width="64"/>
 
 # TLSNotary Apps & Plugin Tooling
