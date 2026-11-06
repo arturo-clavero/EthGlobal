@@ -1,0 +1,96 @@
+{
+  "compiler": "1.0.0-beta.19+74d6be658e1ad252f87943292ba09bdd4da80bd4",
+  "verifierTarget": "noir-recursive",
+  "circuits": {
+    "identity-v1": {
+      "artifactFile": "identity-v1-8b83674e77c0990c5f0aa3bd486c15435ce0603684fe7c93a68038d840ffbe2a.json",
+      "sha256": "8b83674e77c0990c5f0aa3bd486c15435ce0603684fe7c93a68038d840ffbe2a",
+      "keyFile": "identity-v1-9d864e4435ace845e13ac6ea2a53821ec223710f3ad4fb82ea3058e9ba3ca486.key",
+      "keySha256": "9d864e4435ace845e13ac6ea2a53821ec223710f3ad4fb82ea3058e9ba3ca486"
+    },
+    "header-v1": {
+      "artifactFile": "header-v1-29bc0c9cb807a7ffee3c3d09f527394e957ec55971da154a8b4a8e6b09b16beb.json",
+      "sha256": "29bc0c9cb807a7ffee3c3d09f527394e957ec55971da154a8b4a8e6b09b16beb",
+      "keyFile": "header-v1-4be5de7d7ccac19e0127b2417e93b13b68d9518403f7f0e435bcdc26a18a9a5c.key",
+      "keySha256": "4be5de7d7ccac19e0127b2417e93b13b68d9518403f7f0e435bcdc26a18a9a5c"
+    },
+    "identity-link-v1": {
+      "artifactFile": "identity-link-v1-3f867630f4511f38632e0b01b073fa65e9656f33ade41d55aeaf915939a96e91.json",
+      "sha256": "3f867630f4511f38632e0b01b073fa65e9656f33ade41d55aeaf915939a96e91",
+      "keyFile": "identity-link-v1-1699a2c8838b522da04498f23cdd5ed0b84a20450c649dd1da4813a1fb25a81f.key",
+      "keySha256": "1699a2c8838b522da04498f23cdd5ed0b84a20450c649dd1da4813a1fb25a81f"
+    },
+    "scope-link-v1": {
+      "artifactFile": "scope-link-v1-d099039193dcb2be15d50337df3d2846a6b9255b95078c8494f4717784ec5669.json",
+      "sha256": "d099039193dcb2be15d50337df3d2846a6b9255b95078c8494f4717784ec5669",
+      "keyFile": "scope-link-v1-b941e37b78fc29e93282bcc8bd0376a2b0726258681db5989fdc7c6b64069366.key",
+      "keySha256": "b941e37b78fc29e93282bcc8bd0376a2b0726258681db5989fdc7c6b64069366"
+    },
+    "activity-atoms-v1": {
+      "artifactFile": "activity-atoms-v1-eaaea2f091ff7e3ef5d2b37b77a4644e7e347e5aad90510c51f1d50abb873120.json",
+      "sha256": "eaaea2f091ff7e3ef5d2b37b77a4644e7e347e5aad90510c51f1d50abb873120",
+      "keyFile": "activity-atoms-v1-6acddf6f1c6e222266f845c76cda00e26c7a51c63c57f5af70c083fe47411d87.key",
+      "keySha256": "6acddf6f1c6e222266f845c76cda00e26c7a51c63c57f5af70c083fe47411d87"
+    },
+    "claims-chunk-v1": {
+      "artifactFile": "claims-chunk-v1-4a3bc7cd4e9a23f08f165db96a4c5ec5877a3e6de8fde12c60bb5e61886b3585.json",
+      "sha256": "4a3bc7cd4e9a23f08f165db96a4c5ec5877a3e6de8fde12c60bb5e61886b3585",
+      "keyFile": "claims-chunk-v1-bd6e374a9382f84d3be7c2cc9dab9ad1217b9bc940bda9d2fc6c376b5d87a820.key",
+      "keySha256": "bd6e374a9382f84d3be7c2cc9dab9ad1217b9bc940bda9d2fc6c376b5d87a820"
+    },
+    "arg-delta-v1": {
+      "artifactFile": "arg-delta-v1-456a7b55d536a9ad394e77b7cffb7d84f46e1aeedb65aed89be7f0c9dbea9d20.json",
+      "sha256": "456a7b55d536a9ad394e77b7cffb7d84f46e1aeedb65aed89be7f0c9dbea9d20",
+      "keyFile": "arg-delta-v1-e86168e19fb8a6dfb76a8b931cddcc160a9e9c2e19b804a501229b06d42b0200.key",
+      "keySha256": "e86168e19fb8a6dfb76a8b931cddcc160a9e9c2e19b804a501229b06d42b0200"
+    },
+    "request-uuid-v1": {
+      "artifactFile": "request-uuid-v1-c99a79f4d6f8954d75673e66074dd32dd4e908d4fecb200395e2282427091785.json",
+      "sha256": "c99a79f4d6f8954d75673e66074dd32dd4e908d4fecb200395e2282427091785",
+      "keyFile": "request-uuid-v1-79acf5a76af5587567fc6ee80686ab36bde8567cf3cc5c169e8d2c5205f7d880.key",
+      "keySha256": "79acf5a76af5587567fc6ee80686ab36bde8567cf3cc5c169e8d2c5205f7d880"
+    },
+    "subscription-state-v1": {
+      "artifactFile": "subscription-state-v1-a9aed41c98930403deb3198d98c183aab72c0775c1cb4e3a339bcd86fb11f168.json",
+      "sha256": "a9aed41c98930403deb3198d98c183aab72c0775c1cb4e3a339bcd86fb11f168",
+      "keyFile": "subscription-state-v1-95e85b8027eb196e6a7e2a5ca91256c258ce62665193f9b5dd39163ba29a34d0.key",
+      "keySha256": "95e85b8027eb196e6a7e2a5ca91256c258ce62665193f9b5dd39163ba29a34d0"
+    },
+    "atom-v1": {
+      "artifactFile": "atom-v1-db3b8da3c47168a4f55c1f5aab21256fa112c5dfd3b6185459dae3e4235bb95b.json",
+      "sha256": "db3b8da3c47168a4f55c1f5aab21256fa112c5dfd3b6185459dae3e4235bb95b",
+      "keyFile": "atom-v1-e65c874c58127f4000f2530fa72e321579622759f04e962ebbc6137aa9e409f6.key",
+      "keySha256": "e65c874c58127f4000f2530fa72e321579622759f04e962ebbc6137aa9e409f6"
+    },
+    "atoms-small-v1": {
+      "artifactFile": "atoms-small-v1-afc14f76de5d1d2b7a384706c1eff8056045a890ca1b6a18f227804ae07f738f.json",
+      "sha256": "afc14f76de5d1d2b7a384706c1eff8056045a890ca1b6a18f227804ae07f738f",
+      "keyFile": "atoms-small-v1-dee0fa1efaaa6752652c662098b367fbeb47ec64538303e057f7657806945390.key",
+      "keySha256": "dee0fa1efaaa6752652c662098b367fbeb47ec64538303e057f7657806945390"
+    },
+    "arg-link-v1": {
+      "artifactFile": "arg-link-v1-66aa53b43e73f3ce3d25bacbb9d2cc003d86d33a7be797d92853c517920f9740.json",
+      "sha256": "66aa53b43e73f3ce3d25bacbb9d2cc003d86d33a7be797d92853c517920f9740",
+      "keyFile": "arg-link-v1-16466b742c8937596c5d2ea187a1e83e4677ed340b373c39eb1d400b337fad1d.key",
+      "keySha256": "16466b742c8937596c5d2ea187a1e83e4677ed340b373c39eb1d400b337fad1d"
+    },
+    "headers-small-v1": {
+      "artifactFile": "headers-small-v1-7128186d7c08f3883405704d59caf494f0c7f38c056114636da0eafa07628655.json",
+      "sha256": "7128186d7c08f3883405704d59caf494f0c7f38c056114636da0eafa07628655",
+      "keyFile": "headers-small-v1-310a4fa7be2bc8b67e902b9cafb043543c2dd83eb0ceaa5d6f27fe14eae562f4.key",
+      "keySha256": "310a4fa7be2bc8b67e902b9cafb043543c2dd83eb0ceaa5d6f27fe14eae562f4"
+    },
+    "tenant-extra-v1": {
+      "artifactFile": "tenant-extra-v1-a9bfe28ef06190dfe30edac3466d88d119a4dea37bb5ccd2f829c7c5a42587f7.json",
+      "sha256": "a9bfe28ef06190dfe30edac3466d88d119a4dea37bb5ccd2f829c7c5a42587f7",
+      "keyFile": "tenant-extra-v1-145be9122cf18298e286821a0ce2ab024d20df796a9f6c919e312b12bdeff46b.key",
+      "keySha256": "145be9122cf18298e286821a0ce2ab024d20df796a9f6c919e312b12bdeff46b"
+    },
+    "catalog-activity-atoms-v1": {
+      "artifactFile": "catalog-activity-atoms-v1-65ec89148ce39f84d4be2609f1df469c10a1248fab7ac868bd5ef302afde844a.json",
+      "sha256": "65ec89148ce39f84d4be2609f1df469c10a1248fab7ac868bd5ef302afde844a",
+      "keyFile": "catalog-activity-atoms-v1-7df8fac88716089d61d46598d0f3da3194722f77e5abc58af24c2142ebf0dc2e.key",
+      "keySha256": "7df8fac88716089d61d46598d0f3da3194722f77e5abc58af24c2142ebf0dc2e"
+    }
+  }
+}
