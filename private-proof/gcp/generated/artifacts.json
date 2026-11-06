@@ -1,0 +1,41 @@
+{
+  "compiler": "1.0.0-beta.19+74d6be658e1ad252f87943292ba09bdd4da80bd4",
+  "verifierTarget": "noir-recursive",
+  "circuits": {
+    "header-v1": {
+      "file": "header-v1-29bc0c9cb807a7ffee3c3d09f527394e957ec55971da154a8b4a8e6b09b16beb.json",
+      "sha256": "29bc0c9cb807a7ffee3c3d09f527394e957ec55971da154a8b4a8e6b09b16beb",
+      "bytes": 848779
+    },
+    "atom-v1": {
+      "file": "atom-v1-db3b8da3c47168a4f55c1f5aab21256fa112c5dfd3b6185459dae3e4235bb95b.json",
+      "sha256": "db3b8da3c47168a4f55c1f5aab21256fa112c5dfd3b6185459dae3e4235bb95b",
+      "bytes": 2217108
+    },
+    "headers-small-v1": {
+      "file": "headers-small-v1-7128186d7c08f3883405704d59caf494f0c7f38c056114636da0eafa07628655.json",
+      "sha256": "7128186d7c08f3883405704d59caf494f0c7f38c056114636da0eafa07628655",
+      "bytes": 426970
+    },
+    "atoms-small-v1": {
+      "file": "atoms-small-v1-afc14f76de5d1d2b7a384706c1eff8056045a890ca1b6a18f227804ae07f738f.json",
+      "sha256": "afc14f76de5d1d2b7a384706c1eff8056045a890ca1b6a18f227804ae07f738f",
+      "bytes": 2226826
+    },
+    "timestamps-v1": {
+      "file": "timestamps-v1-2ec1660c7de7b0c49f797d189f2aca96d7e3736adad41c5481dd569dae017b4c.json",
+      "sha256": "2ec1660c7de7b0c49f797d189f2aca96d7e3736adad41c5481dd569dae017b4c",
+      "bytes": 126826
+    },
+    "identity-scope-v1": {
+      "file": "identity-scope-v1-70947f69dcbaee8226517e1ef2d47ed392565932b37d293f0beca9f9a6d6bade.json",
+      "sha256": "70947f69dcbaee8226517e1ef2d47ed392565932b37d293f0beca9f9a6d6bade",
+      "bytes": 571031
+    },
+    "query-scope-v1": {
+      "file": "query-scope-v1-10d546537f23d8f3ad50ed0376ef081b079a914ce02390c8695601d8a557927e.json",
+      "sha256": "10d546537f23d8f3ad50ed0376ef081b079a914ce02390c8695601d8a557927e",
+      "bytes": 830154
+    }
+  }
+}

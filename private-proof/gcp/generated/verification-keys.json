@@ -1,0 +1,49 @@
+{
+  "backend": "4.2.0-aztecnr-rc.2",
+  "compiler": "1.0.0-beta.19+74d6be658e1ad252f87943292ba09bdd4da80bd4",
+  "verifierTarget": "noir-recursive",
+  "circuits": {
+    "header-v1": {
+      "artifactSha256": "29bc0c9cb807a7ffee3c3d09f527394e957ec55971da154a8b4a8e6b09b16beb",
+      "file": "header-v1-4be5de7d7ccac19e0127b2417e93b13b68d9518403f7f0e435bcdc26a18a9a5c.vk",
+      "sha256": "4be5de7d7ccac19e0127b2417e93b13b68d9518403f7f0e435bcdc26a18a9a5c",
+      "bytes": 3680
+    },
+    "atom-v1": {
+      "artifactSha256": "db3b8da3c47168a4f55c1f5aab21256fa112c5dfd3b6185459dae3e4235bb95b",
+      "file": "atom-v1-e65c874c58127f4000f2530fa72e321579622759f04e962ebbc6137aa9e409f6.vk",
+      "sha256": "e65c874c58127f4000f2530fa72e321579622759f04e962ebbc6137aa9e409f6",
+      "bytes": 3680
+    },
+    "headers-small-v1": {
+      "artifactSha256": "7128186d7c08f3883405704d59caf494f0c7f38c056114636da0eafa07628655",
+      "file": "headers-small-v1-310a4fa7be2bc8b67e902b9cafb043543c2dd83eb0ceaa5d6f27fe14eae562f4.vk",
+      "sha256": "310a4fa7be2bc8b67e902b9cafb043543c2dd83eb0ceaa5d6f27fe14eae562f4",
+      "bytes": 3680
+    },
+    "atoms-small-v1": {
+      "artifactSha256": "afc14f76de5d1d2b7a384706c1eff8056045a890ca1b6a18f227804ae07f738f",
+      "file": "atoms-small-v1-dee0fa1efaaa6752652c662098b367fbeb47ec64538303e057f7657806945390.vk",
+      "sha256": "dee0fa1efaaa6752652c662098b367fbeb47ec64538303e057f7657806945390",
+      "bytes": 3680
+    },
+    "timestamps-v1": {
+      "artifactSha256": "2ec1660c7de7b0c49f797d189f2aca96d7e3736adad41c5481dd569dae017b4c",
+      "file": "timestamps-v1-c8e87110228e4e184bdf326b336570b977fd3687a7a174312e4ca6bfcb10a321.vk",
+      "sha256": "c8e87110228e4e184bdf326b336570b977fd3687a7a174312e4ca6bfcb10a321",
+      "bytes": 3680
+    },
+    "identity-scope-v1": {
+      "artifactSha256": "70947f69dcbaee8226517e1ef2d47ed392565932b37d293f0beca9f9a6d6bade",
+      "file": "identity-scope-v1-bb013dbf1a26449636b338408cd3c78a642dd88a810bc29eb36bdcb6b69d21fc.vk",
+      "sha256": "bb013dbf1a26449636b338408cd3c78a642dd88a810bc29eb36bdcb6b69d21fc",
+      "bytes": 3680
+    },
+    "query-scope-v1": {
+      "artifactSha256": "10d546537f23d8f3ad50ed0376ef081b079a914ce02390c8695601d8a557927e",
+      "file": "query-scope-v1-c45419eab661653640daaa49f74d2f1365869be5c92785df8a69c6060d743dee.vk",
+      "sha256": "c45419eab661653640daaa49f74d2f1365869be5c92785df8a69c6060d743dee",
+      "bytes": 3680
+    }
+  }
+}
