@@ -70,6 +70,7 @@ vi.mock('../../src/offscreen/ProveManager', () => ({ ProveManager: class {
 
 import { SessionManager } from '../../src/offscreen/SessionManager';
 import { AwsPrivateWitnessRun } from '../../src/offscreen/awsPrivateWitness';
+import { PrivateWitnessRun } from '../../src/offscreen/gcpPrivateWitness';
 
 beforeEach(() => {
   vi.stubGlobal('crypto', webcrypto);
@@ -109,6 +110,23 @@ describe('SessionManager private GCP capability', () => {
       expect(displays()).toHaveLength(count);
       expect(vi.getTimerCount()).toBe(0);
     } finally { vi.useRealTimers(); }
+  });
+  it('uses a preconstructed compiled run instead of wrapping it in the GCP policy', async () => {
+    const local = { prove: vi.fn(async () => ({ testProof: true })), clear: vi.fn() };
+    const run = new PrivateWitnessRun(runData, runData.proofId, local, {
+      method: 'GCP_WORK', nonceMac: 'b'.repeat(43), proveTimeoutMs: 1000,
+      steps: Array.from({ length: 6 }, (_, i) => ({ step: i ? `groups:${i - 1}` : 'identity',
+        host: i ? 'logging.clients6.google.com' : 'accounts.google.com' })),
+      finish: (result, sessionIds) => ({ result, sessionIds }),
+    });
+    const result = await new SessionManager().executePlugin('packaged code', runData.proofId,
+      { ...runData, _approvalMode: 'all-session' }, run);
+    expect(result).toMatchObject({ result: { testProof: true }, sessionIds: expect.any(Array) });
+    expect(local.prove).toHaveBeenCalledOnce();
+    expect(local.clear).toHaveBeenCalled();
+    expect(state.seen.every(value => !('privateAccountEmail' in value))).toBe(true);
+    expect(JSON.stringify(result)).not.toContain('secretDonePayload');
+    expect(state.snapshots.every(bytes => bytes.every(byte => byte === 0))).toBe(true);
   });
   it('a trusted close of this window cancels proving after SDK done; wrong senders/windows cannot', async () => {
     state.openWindow = true;

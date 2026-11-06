@@ -1,6 +1,7 @@
 // THIRD_PARTY_NOTICES.txt of the shipped extension, written by build.sh after the webpack build.
 //   node --no-warnings third-party-notices.mts --modules <bundled-modules.json> --upstream <repo root>
 //     [--private-proof-root <private-proof/gcp>] [--aws-private-proof-root <private-proof/aws>]
+//     [--azure-private-proof-root <private-proof/azure>]
 //     --product "<name> <version>" --header <THIRD_PARTY_NOTICES.txt> --crates <third-party/wasm-crates.json> --out <file>
 // Covers:
 // - the upstream extension and its prover (the hand-written header: TLSNotary, MIT OR Apache-2.0);
@@ -28,6 +29,7 @@ const need = (k: string) => {
 const upstream = realpathSync(need("upstream"));
 const privateProofRoot = args.has("private-proof-root") ? realpathSync(need("private-proof-root")) : null;
 const awsPrivateProofRoot = args.has("aws-private-proof-root") ? realpathSync(need("aws-private-proof-root")) : null;
+const azurePrivateProofRoot = args.has("azure-private-proof-root") ? realpathSync(need("azure-private-proof-root")) : null;
 const modules: string[] = JSON.parse(readFileSync(need("modules"), "utf8"));
 const header = readFileSync(need("header"), "utf8").trim();
 const crates = JSON.parse(readFileSync(need("crates"), "utf8")) as {
@@ -99,7 +101,8 @@ function addFile(file: string) {
   const real = existsSync(file) ? realpathSync(file) : file;
   if (!real.startsWith(upstream + sep) &&
       !(privateProofRoot && real.startsWith(privateProofRoot + sep)) &&
-      !(awsPrivateProofRoot && real.startsWith(awsPrivateProofRoot + sep))) {
+      !(awsPrivateProofRoot && real.startsWith(awsPrivateProofRoot + sep)) &&
+      !(azurePrivateProofRoot && real.startsWith(azurePrivateProofRoot + sep))) {
     problems.push(`bundled file outside the upstream tree: ${real}`);
     return;
   }
@@ -121,7 +124,8 @@ function addFile(file: string) {
 for (const m of modules) addFile(m);
 for (const f of workspaceFiles) {
   if (!f.startsWith(join(upstream, "packages") + sep) && !(privateProofRoot && f.startsWith(privateProofRoot + sep)) &&
-      !(awsPrivateProofRoot && f.startsWith(awsPrivateProofRoot + sep)))
+      !(awsPrivateProofRoot && f.startsWith(awsPrivateProofRoot + sep)) &&
+      !(azurePrivateProofRoot && f.startsWith(azurePrivateProofRoot + sep)))
     problems.push(`bundled file is neither a package nor approved application code: ${f}`);
 }
 
@@ -165,12 +169,18 @@ const crateRows: [(typeof crates.crates)[number], string[]][] = crates.crates.ma
   c,
   c.texts.map((t) => useText(crates.texts[t], `${c.name} ${c.version}`)),
 ]);
+// The Azure discovery bundle carries a small Node.js-derived adapter; its MIT notice is the file's leading comment.
+const discoveryAdapter = modules.find((path) => path.endsWith("/browser-discovery-platform.mjs"));
+const discoveryLicense = discoveryAdapter ? useText(readFileSync(discoveryAdapter, "utf8")
+  .split("const RegExpPrototypeTest")[0].split("\n").filter((line) => line.startsWith("//"))
+  .map((line) => line.replace(/^\/\/ ?/, "")).join("\n"), "Node.js internal/net.js browser adapter (MIT)") : null;
 const order = [...textIds.keys()];
 const ref = (ids: string[]) => ids.map((id) => `[${order.indexOf(id) + 1}]`).join(" ");
 for (const [p, ids] of npmRows) out.push((`  ${p.name} ${p.version}  ${p.license}  ${ref(ids)}${p.note ? `  (${p.note})` : ""}`));
 out.push("");
 out.push(`2. Rust crates compiled into the WebAssembly prover tlsn_wasm_bg.wasm (tlsn-wasm ${crates.tlsnWasm}; ${crates.crates.length})`, "");
 for (const [c, ids] of crateRows) out.push((`  ${c.name} ${c.version}  ${c.license}  ${ref(ids)}${c.note ? `  (${c.note})` : ""}`));
+if (discoveryLicense) out.push("", `Node.js-derived browser IP validation: MIT ${ref([discoveryLicense])}`);
 out.push("", "=".repeat(118), "", "3. License texts", "");
 order.forEach((id, i) => {
   const e = textIds.get(id)!;

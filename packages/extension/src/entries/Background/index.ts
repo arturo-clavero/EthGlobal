@@ -1,3 +1,7 @@
+import { createAzureDiscoveryBackground } from '../../azure-private/discovery-background.mjs';
+import { validateAzureAttempt } from '../../azure-private/browser-result.mjs';
+import { closeAzurePrivateWindow } from '../../background/azurePrivateWindow';
+import { AZURE_PRIVATE_ROUTE_TTL_MS, type AzurePrivateRoute, liveAzurePrivateRoute, takeAzurePrivateCompletion, takeAzurePrivateCancellation, liveAzurePrivatePageRoute, dropAzurePrivatePageRoutes } from '../../background/azurePrivateCompletion';
 import browser from 'webextension-polyfill';
 import { WindowManager } from '../../background/WindowManager';
 // The PLUGIN_NAVIGATE gate (kept apart from the helper set's import lines).
@@ -24,13 +28,15 @@ getStoredLogLevel().then((level) => {
 
 // Initialize WindowManager for multi-window support
 const windowManager = new WindowManager();
+const azureDiscovery = createAzureDiscoveryBackground(browser);
+browser.tabs.onRemoved.addListener(tabId => azureDiscovery.tabRemoved(tabId));
 
 // Track requestId → tabId for routing progress events back to the originating tab.
 // Entries have a TTL to prevent leaks if the offscreen document crashes before cleanup.
 const PROGRESS_ROUTE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 // `pageProgress` marks a route whose run was
 // auto-approved (a trusted plugin on an allowed origin); only those get PLUGIN_PROGRESS.
-const progressRoutes: Map<string, GcpPrivateRoute> =
+const progressRoutes: Map<string, GcpPrivateRoute & AzurePrivateRoute> =
   new Map();
 
 // Handle extension install/update
@@ -99,8 +105,12 @@ browser.windows.onRemoved.addListener(async (windowId) => {
   }
 });
 
+browser.tabs.onRemoved.addListener(tabId => dropAzurePrivatePageRoutes(tabId, progressRoutes));
+
 // Listen for tab updates to show overlay when tab is ready (Task 3.4)
 browser.tabs.onUpdated.addListener(async (tabId, changeInfo, _tab) => {
+  if (changeInfo.status === 'loading') azureDiscovery.tabChanged(tabId);
+  if (changeInfo.status === 'loading') dropAzurePrivatePageRoutes(tabId, progressRoutes);
   // Only act when tab becomes complete
   if (changeInfo.status !== 'complete') {
     return;
@@ -121,8 +131,37 @@ browser.tabs.onUpdated.addListener(async (tabId, changeInfo, _tab) => {
 
 // Basic message handler
 browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.MessageSender) => {
+  if (msg && typeof msg === 'object' && 'type' in msg &&
+      ['START_AZURE_DISCOVERY', 'ATTACH_AZURE_DISCOVERY', 'CANCEL_AZURE_DISCOVERY', 'AZURE_DISCOVERY_PORTAL_STATUS', 'AZURE_DISCOVERY_PORTAL_HEARTBEAT'].includes(String(msg.type))) {
+    return azureDiscovery.handle(msg, sender);
+  }
   const privateMessage = msg as { type?: string; requestId?: unknown };
   const privateDeps = { extensionId: browser.runtime.id, offscreenUrl: browser.runtime.getURL('offscreen.html'), now: Date.now() };
+  if (privateMessage?.type === 'AZURE_PRIVATE_PAGE_HEARTBEAT') {
+    return Promise.resolve({ ok: liveAzurePrivatePageRoute(msg, sender, progressRoutes, browser.runtime.id, Date.now()) });
+  }
+  if (privateMessage?.type === 'CLOSE_AZURE_PRIVATE_WINDOW') {
+    return closeAzurePrivateWindow(msg, sender, { ...privateDeps,
+      getTab: id => browser.tabs.get(id), getWindow: id => browser.windows.get(id, { populate: true }),
+      removeTab: id => browser.tabs.remove(id),
+    }).then(ok => ({ ok }));
+  }
+  if (privateMessage?.type === 'CANCEL_AZURE_PRIVATE') {
+    const requestId = takeAzurePrivateCancellation(msg, sender, progressRoutes, browser.runtime.id);
+    if (!requestId) return Promise.resolve({ ok: false });
+    return browser.runtime.sendMessage({ type: 'CANCEL_AZURE_PRIVATE_OFFSCREEN', requestId })
+      .then(reply => ({ ok: !!reply && typeof reply === 'object' && 'ok' in reply && reply.ok === true }))
+      .catch(() => ({ ok: false }));
+  }
+  if (privateMessage?.type === 'AZURE_PRIVATE_HEARTBEAT') {
+    return Promise.resolve({ ok: !!liveAzurePrivateRoute(privateMessage.requestId, sender, progressRoutes, privateDeps) });
+  }
+  if (privateMessage?.type === 'AZURE_PRIVATE_COMPLETE') {
+    const completion = takeAzurePrivateCompletion(msg, sender, progressRoutes, privateDeps);
+    if (!completion) return Promise.resolve({ ok: false });
+    return browser.tabs.sendMessage(completion.tabId, { type: 'RUN_BUILTIN_COMPLETE',
+      requestId: completion.requestId, ...completion.response }).then(() => ({ ok: true })).catch(() => ({ ok: false }));
+  }
   if (privateMessage?.type === 'AWS_PRIVATE_CREDENTIALS') {
     return readAwsPrivateCapture(msg, sender, progressRoutes, { ...privateDeps, now: Date.now,
       window: id => windowManager.getWindow(id), tab: id => browser.tabs.get(id),
@@ -216,6 +255,15 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
   if (request.type === 'PLUGIN_PROGRESS') {
     const route = progressRoutes.get(request.requestId);
     if ((route?.gcpPrivate || route?.awsPrivate) && !livePrivateRoute(request.requestId, sender, progressRoutes, privateDeps, route.awsPrivate ? 'aws' : 'gcp')) return;
+    if (route?.azurePrivate && !liveAzurePrivateRoute(request.requestId, sender, progressRoutes, privateDeps)) return;
+    if (route?.azurePrivate) {
+      const progress = request.progress as { method?: unknown; status?: unknown; index?: unknown; total?: unknown };
+      if (progress?.method !== 'AZURE_WORK_PRIVATE' || progress.status !== 'busy' ||
+          !Number.isInteger(progress.index) || (progress.index as number) < 0 || !Number.isInteger(progress.total) || (progress.total as number) < 1 || (progress.total as number) > 128 || (progress.index as number) > (progress.total as number)) return;
+      browser.tabs.sendMessage(route.tabId, { type: 'PLUGIN_PROGRESS', requestId: request.requestId,
+        progress: { method: 'AZURE_WORK_PRIVATE', status: 'busy', index: progress.index, total: progress.total } }).catch(() => {});
+      return;
+    }
     if (route?.pageProgress) {
       browser.tabs
         .sendMessage(route.tabId, {
@@ -269,10 +317,20 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
     const requestId = approval.requestId;
     const privateGcp = approval.plugin.id === 'gcp-work';
     const privateAws = approval.plugin.id === 'aws-private-work';
-    const privateRun = privateGcp || privateAws;
-    const privateError = privateAws ? 'AWS_PRIVATE_PROVING_FAILED' : 'GCP_PRIVATE_PROVING_FAILED';
+    const privateAzure = approval.plugin.id === 'azure-private-work';
+    const privateRun = privateGcp || privateAws || privateAzure;
+    const privateError = privateAws ? 'AWS_PRIVATE_PROVING_FAILED' : privateAzure ? 'AZURE_PRIVATE_PROVING_FAILED' : 'GCP_PRIVATE_PROVING_FAILED';
+    let azureAttempt;
+    if (privateAzure) try {
+      const params = JSON.parse(approval.values.params);
+      if (!params || typeof params !== 'object' || Array.isArray(params) || Object.keys(params).length !== 1) throw new Error();
+      azureAttempt = validateAzureAttempt(params.privateAttempt);
+      if (azureAttempt.proofId !== requestId || azureAttempt.pluginSha256 !== approval.plugin.sha256) throw new Error();
+    } catch { return Promise.resolve({ success: false, error: privateError }); }
+
     if ((privateRun && (!requestId || sender.tab?.id === undefined || progressRoutes.has(requestId))) ||
-        (requestId && (progressRoutes.get(requestId)?.gcpPrivate || progressRoutes.get(requestId)?.awsPrivate))) {
+        (requestId && (progressRoutes.get(requestId)?.gcpPrivate || progressRoutes.get(requestId)?.awsPrivate ||
+          progressRoutes.get(requestId)?.azurePrivate))) {
       if (privateGcp) {
         try { console.debug('GCP_PRIVATE_ROUTE_REFUSED'); } catch { /* Keep the original refusal. */ }
       }
@@ -286,6 +344,7 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
         createdAt: Date.now(),
         pageProgress: true,
         ...(privateGcp ? { gcpPrivate: true } : privateAws ? { awsPrivate: true } : {}),
+        ...(privateAzure ? { azurePrivate: true, azureOrigin: approval.origin, azureAttempt } : {}),
       });
     }
 
@@ -295,6 +354,8 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
       let pendingPrivate = false;
       let stage: 'CREATE_OFFSCREEN' | 'WAIT_OFFSCREEN' | 'SEND_OFFSCREEN' = 'CREATE_OFFSCREEN';
       try {
+        const azureDiscoverySelection = privateAzure ? await azureDiscovery.prepare(sender, azureAttempt) : undefined;
+        if (privateAzure && !progressRoutes.has(requestId!)) throw new Error('AZURE_PRIVATE_PROVING_FAILED');
         await createOffscreenDocument();
         stage = 'WAIT_OFFSCREEN';
         await waitForOffscreenReady(() => chrome.runtime.sendMessage({ type: 'PROCESS_DATA' }));
@@ -307,6 +368,7 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
           requestId,
           // The page's checked keys first, then ours (so a page cannot set them).
           sessionData: offscreenSessionData(approval),
+          ...(privateAzure ? { azureDiscoverySelection } : {}),
         });
         pendingPrivate = privateRun && response?.success === true && response?.pending === true;
         if (!privateRun) logger.debug('RUN_BUILTIN_OFFSCREEN response:', response);
@@ -559,7 +621,7 @@ setInterval(() => {
   // Evict stale progress routes (TTL-based)
   const now = Date.now();
   for (const [requestId, route] of progressRoutes) {
-    if (now - route.createdAt >= (route.awsPrivate ? AWS_PRIVATE_ROUTE_TTL_MS : route.gcpPrivate ? GCP_PRIVATE_ROUTE_TTL_MS : PROGRESS_ROUTE_TTL_MS)) {
+    if (now - route.createdAt >= (route.azurePrivate ? AZURE_PRIVATE_ROUTE_TTL_MS : route.awsPrivate ? AWS_PRIVATE_ROUTE_TTL_MS : route.gcpPrivate ? GCP_PRIVATE_ROUTE_TTL_MS : PROGRESS_ROUTE_TTL_MS)) {
       logger.debug('Evicting stale progress route:', requestId);
       progressRoutes.delete(requestId);
     }

@@ -91,6 +91,7 @@ export type OffscreenMessage =
   // package in the offscreen document (offscreen/builtinRun.ts).
   | {
       type: 'RUN_BUILTIN_OFFSCREEN';
+      azureDiscoverySelection?: unknown;
       pluginId: string;
       fingerprint: string;
       values: {

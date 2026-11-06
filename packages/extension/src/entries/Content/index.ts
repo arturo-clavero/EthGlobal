@@ -1,3 +1,4 @@
+import { startAzurePrivatePageHeartbeat } from '../../constants/azurePrivatePageHeartbeat';
 import browser from 'webextension-polyfill';
 import type { DomJson } from '@tlsn/plugin-sdk';
 import type { ContentMessage, ExecCodeResponse } from '../../types/messages';
@@ -16,10 +17,12 @@ logger.debug('Content script loaded');
 // helperStatus answers (constants/productOrigins.ts, build-time list).
 const PRODUCT_PAGE = isProductOrigin(window.location.origin);
 const pendingPrivateRuns = new Map<string, { timer: ReturnType<typeof setTimeout>; error: string }>();
+const azurePageHeartbeats = new Map<string, () => void>();
 const finishPrivateRun = (requestId: string) => {
   const pending = pendingPrivateRuns.get(requestId);
   if (pending === undefined) return undefined;
-  clearTimeout(pending.timer); pendingPrivateRuns.delete(requestId); return pending;
+  clearTimeout(pending.timer); pendingPrivateRuns.delete(requestId);
+  azurePageHeartbeats.get(requestId)?.(); azurePageHeartbeats.delete(requestId); return pending;
 };
 
 // Inject a script into the page if needed
@@ -322,6 +325,47 @@ window.addEventListener('message', (event) => {
   // Only accept messages from the same origin
   if (event.origin !== window.location.origin) return;
 
+  if (event.data?.type === 'TLSN_AZURE_DISCOVERY') {
+    if (event.source !== window || !PRODUCT_PAGE) return;
+    const p = event.data.payload;
+    if (!p || typeof p !== 'object' || Array.isArray(p) || typeof p.nonce !== 'string' ||
+        !/^[A-Za-z0-9_-]{43}$/.test(p.nonce) || !['start', 'attach', 'cancel'].includes(p.action)) return;
+    const keys = p.action === 'start' ? ['action', 'nonce'] : p.action === 'attach'
+      ? ['action', 'nonce', 'handle', 'proofId'] : ['action', 'nonce', ...(p.handle === undefined ? [] : ['handle'])];
+    if (Object.keys(p).length !== keys.length || keys.some(key => !Object.hasOwn(p, key)) ||
+        p.action === 'attach' && (typeof p.handle !== 'string' || typeof p.proofId !== 'string') ||
+        p.handle !== undefined && (typeof p.handle !== 'string' || !/^[a-f0-9-]{36}$/i.test(p.handle))) return;
+    const type = p.action === 'start' ? 'START_AZURE_DISCOVERY' : p.action === 'attach' ? 'ATTACH_AZURE_DISCOVERY' : 'CANCEL_AZURE_DISCOVERY';
+    const reply = (raw: unknown) => {
+      const value = raw as { status?: unknown; handle?: unknown; ok?: unknown } | null;
+      const ready = p.action === 'start' && value?.status === 'ready' && typeof value.handle === 'string' && /^[a-f0-9-]{36}$/i.test(value.handle);
+      window.postMessage({ type: 'TLSN_AZURE_DISCOVERY_RESPONSE', action: p.action, nonce: p.nonce,
+        ...(p.action === 'start' ? { status: ready ? 'ready' : 'unavailable', verified: false,
+          ...(ready ? { handle: value!.handle } : {}) } : { ok: value?.ok === true }) }, window.location.origin);
+    };
+    browser.runtime.sendMessage({ type, nonce: p.nonce, ...(p.handle ? { handle: p.handle } : {}),
+      ...(p.action === 'attach' ? { proofId: p.proofId } : {}) }).then(reply).catch(() => reply(null));
+    return;
+  }
+  if (event.data?.type === 'TLSN_CANCEL_AZURE_PRIVATE') {
+    if (event.source !== window || !PRODUCT_PAGE) return;
+    const p = event.data.payload;
+    if (!p || typeof p !== 'object' || Array.isArray(p) || Reflect.ownKeys(p).length !== 3 ||
+        typeof p.requestId !== 'string' || !/^[a-f0-9-]{36}$/i.test(p.requestId) ||
+        typeof p.pluginSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(p.pluginSha256) ||
+        typeof p.nonceMac !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(p.nonceMac)) return;
+    browser.runtime.sendMessage({ type: 'CANCEL_AZURE_PRIVATE', requestId: p.requestId,
+      pluginSha256: p.pluginSha256, nonceMac: p.nonceMac }).then(reply => {
+      const ok = !!reply && typeof reply === 'object' && 'ok' in reply && reply.ok === true;
+      if (ok && finishPrivateRun(p.requestId)) {
+        window.postMessage({ type: 'TLSN_RUN_BUILTIN_RESPONSE', requestId: p.requestId,
+          success: false, error: 'AZURE_PRIVATE_PROVING_FAILED' }, window.location.origin);
+      }
+      window.postMessage({ type: 'TLSN_CANCEL_AZURE_PRIVATE_RESPONSE', requestId: p.requestId, ok }, window.location.origin);
+    }).catch(() => window.postMessage({ type: 'TLSN_CANCEL_AZURE_PRIVATE_RESPONSE', requestId: p.requestId, ok: false }, window.location.origin));
+    return;
+  }
+
   // Handle TLSN window.tlsn.open() calls
   if (event.data?.type === 'TLSN_OPEN_WINDOW') {
 
@@ -372,13 +416,15 @@ window.addEventListener('message', (event) => {
         { type: 'TLSN_RUN_BUILTIN_RESPONSE', requestId, ...body },
         window.location.origin,
       );
-    const privateRun = p.pluginId === 'gcp-work' || p.pluginId === 'aws-private-work';
-    const privateError = p.pluginId === 'aws-private-work' ? 'AWS_PRIVATE_PROVING_FAILED' : 'GCP_PRIVATE_PROVING_FAILED';
+    const privateAzure = p.pluginId === 'azure-private-work';
+    const privateRun = p.pluginId === 'gcp-work' || p.pluginId === 'aws-private-work' || privateAzure;
+    const privateError = p.pluginId === 'aws-private-work' ? 'AWS_PRIVATE_PROVING_FAILED'
+      : privateAzure ? 'AZURE_PRIVATE_PROVING_FAILED' : 'GCP_PRIVATE_PROVING_FAILED';
     if (privateRun && requestId && PRODUCT_PAGE) {
       if (pendingPrivateRuns.has(requestId)) return;
       pendingPrivateRuns.set(requestId, { error: privateError, timer: setTimeout(() => {
         if (finishPrivateRun(requestId)) reply({ success: false, error: privateError });
-      }, 13 * 60 * 1000) });
+      }, (privateAzure ? 60 : 13) * 60 * 1000) });
     }
     const connected = privateRun ? (async () => {
       try {
@@ -401,7 +447,21 @@ window.addEventListener('message', (event) => {
       }))
       .then((msg) => {
         const response = msg as ExecCodeResponse & { pending?: boolean };
-        if (privateRun && response?.success === true && response.pending === true) return;
+        if (privateRun && response?.success === true && response.pending === true) {
+          if (privateAzure && pendingPrivateRuns.has(requestId)) {
+            if (typeof p.params !== 'string') throw new Error(privateError);
+            const attempt = JSON.parse(p.params).privateAttempt;
+            if (attempt.proofId !== requestId || attempt.pluginSha256 !== p.fingerprint) throw new Error(privateError);
+            const stop = startAzurePrivatePageHeartbeat(attempt, message => browser.runtime.sendMessage(message), () => {
+              if (!finishPrivateRun(requestId)) return;
+              void browser.runtime.sendMessage({ type: 'CANCEL_AZURE_PRIVATE', requestId,
+                pluginSha256: attempt.pluginSha256, nonceMac: attempt.nonceMac }).catch(() => {});
+              reply({ success: false, error: privateError });
+            });
+            azurePageHeartbeats.set(requestId, stop);
+          }
+          return;
+        }
         finishPrivateRun(requestId);
         if (response && response.success === true) {
           reply({ success: true, result: response.result });

@@ -274,6 +274,7 @@ if (isDevelopment) {
     minimize: true,
     minimizer: [
       new TerserPlugin({
+        parallel: false,
         extractComments: false,
       }),
     ],

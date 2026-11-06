@@ -38,12 +38,12 @@ function fixture(t, env) {
   return { out, path, context, manifest: JSON.parse(readFileSync(path, 'utf8')) };
 }
 
-test('package captures AWS early and the production guard limits the regional wildcard', t => {
+test('package captures AWS early, scopes Azure discovery to the portal and the production guard limits the regional wildcard', t => {
   const { path, context, manifest } = fixture(t, {});
   assert.equal(manifest.name, 'test');
   assert.equal(manifest.description, 'test description');
   assert.deepEqual(manifest.permissions, ['offscreen', 'webRequest']);
-  assert.equal(manifest.content_scripts.length, 2);
+  assert.equal(manifest.content_scripts.length, 3);
   assert.deepEqual(manifest.content_scripts[1].matches, consoleHosts);
   assert.equal(manifest.content_scripts[1].run_at, 'document_start');
   assert.deepEqual(manifest.content_scripts[1].js, manifest.content_scripts[0].js);
@@ -54,6 +54,11 @@ test('package captures AWS early and the production guard limits the regional wi
     assert(manifest.content_scripts[0].matches.includes(host));
   for (const host of consoleHosts) assert(manifest.web_accessible_resources[0].matches.includes(host));
   assert(!manifest.content_scripts.some(script => script.matches.some(host => host.includes('iam.amazonaws.com') || host.includes('cloudtrail.us-east-1.amazonaws.com'))));
+  // Azure discovery: only the compiled portal bundle, in the isolated world.
+  assert.deepEqual(manifest.content_scripts[2], { matches: ['https://portal.azure.com/*'],
+    js: ['azure-private/portal-discovery.bundle.js'], run_at: 'document_idle', world: 'ISOLATED' });
+  for (const host of ['https://portal.azure.com/*', 'https://graph.microsoft.com/*', 'https://management.azure.com/*'])
+    assert(manifest.host_permissions.includes(host));
   const check = value => {
     writeFileSync(path, JSON.stringify(value));
     runInNewContext(guard, { require: context.require, process: context.process });

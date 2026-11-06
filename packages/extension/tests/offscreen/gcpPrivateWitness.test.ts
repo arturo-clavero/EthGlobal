@@ -1,7 +1,7 @@
 import { createHash, webcrypto } from 'node:crypto';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { RevealOutput } from 'tlsn-wasm';
-import { GcpPrivateWitnessRun, clearGcpOpenings } from '../../src/offscreen/gcpPrivateWitness';
+import { GcpPrivateWitnessRun, PrivateWitnessRun, clearGcpOpenings } from '../../src/offscreen/gcpPrivateWitness';
 import type { GcpPrivateProofModule, GcpPrivateWitness, GcpPrivateRevealPlan, GcpPrivateProof } from '../../src/offscreen/gcpPrivateWitness';
 
 vi.mock('@tlsn/plugin-sdk', () => ({ canonicalizeHandler: (handler: unknown) => handler }));
@@ -72,6 +72,75 @@ async function session(run: GcpPrivateWitnessRun, index: number) {
   return run.accept(id, host, bytes(), bytes(), native.openings, native.response);
 }
 const buffers = (w: GcpPrivateWitness) => [w.sent, w.recv, ...[...w.openings.sent, ...w.openings.recv].flatMap(o => [o.hash, o.blinder])];
+
+describe('compiled provider policy uses the existing private byte owner', () => {
+  const runData = { ...data, method: 'AZURE_WORK_PRIVATE' };
+  const host = 'graph.microsoft.com';
+  const id = '33333333-3333-4333-8333-333333333333';
+  const policy = () => ({ method: 'AZURE_WORK_PRIVATE' as const, nonceMac: data.nonceMac,
+    steps: [{ step: 'identity', host }], proveTimeoutMs: 25,
+    finish: vi.fn((result: unknown, sessionIds: string[]) => ({ result, sessionIds })) });
+  const capture = async (run: PrivateWitnessRun) => {
+    run.begin({ ...runData, step: 'identity' }, host, false);
+    const chosen = await run.selectRanges(id, host, bytes(), bytes(), () => ranges());
+    const native = receipt(chosen);
+    return run.accept(id, host, bytes(), bytes(), native.openings, native.response);
+  };
+  it('requires the compiled method, request ID, nonce, step and host', async () => {
+    const local = { prove: vi.fn() };
+    expect(() => new PrivateWitnessRun(data, proofId, local, policy())).toThrow();
+    expect(() => new PrivateWitnessRun(runData, 'other', local, policy())).toThrow();
+    const run = new PrivateWitnessRun(runData, proofId, local, policy());
+    for (const change of [{ method: 'GCP_WORK' }, { nonceMac: 'c'.repeat(43) },
+      { proofId: 'other' }, { pluginSha256: 'c'.repeat(64) }, { step: 'groups:0' }]) {
+      expect(() => run.begin({ ...runData, step: 'identity', ...change }, host, false)).toThrow();
+    }
+    expect(() => run.begin({ ...runData, step: 'identity' }, 'accounts.google.com', false)).toThrow();
+    expect(() => run.begin({ ...runData, step: 'identity' }, host, true)).toThrow();
+    await expect(run.finish()).rejects.toThrow();
+    run.clear();
+    expect(local.prove).not.toHaveBeenCalled();
+  });
+  it('passes exact session IDs to the policy without requiring GCP identity output', async () => {
+    let held: Uint8Array[] = [];
+    const local = { prove: vi.fn(async (w: readonly GcpPrivateWitness[]) => {
+      held = w.flatMap(buffers); return { testProof: true };
+    }), clear: vi.fn() };
+    const selected = policy(), run = new PrivateWitnessRun(runData, proofId, local, selected);
+    expect(await capture(run)).toEqual(receipt().response);
+    expect(await run.finish()).toEqual({ result: { testProof: true }, sessionIds: [id] });
+    expect(selected.finish).toHaveBeenCalledWith({ testProof: true }, [id]);
+    expect(held.length).toBeGreaterThan(0);
+    expect(held.every(value => value.every(byte => byte === 0))).toBe(true);
+    expect(local.clear).toHaveBeenCalled();
+    await expect(capture(run)).rejects.toThrow();
+  });
+  it('rejects substituted native openings under a different compiled policy', async () => {
+    const local = { prove: vi.fn(), clear: vi.fn() };
+    const run = new PrivateWitnessRun(runData, proofId, local, policy());
+    run.begin({ ...runData, step: 'identity' }, host, false);
+    const chosen = await run.selectRanges(id, host, bytes(), bytes(), () => ranges());
+    const native = receipt(chosen); native.openings.sent[0].blinder[0] ^= 1;
+    await expect(run.accept(id, host, bytes(), bytes(), native.openings, native.response)).rejects.toThrow();
+    run.clear();
+    expect(local.prove).not.toHaveBeenCalled();
+  });
+  it('enforces the compiled timeout, aborts proving and erases retained copies', async () => {
+    vi.useFakeTimers();
+    let held: Uint8Array[] = [], signal: AbortSignal | undefined;
+    const local = { prove: (w: readonly GcpPrivateWitness[], s: AbortSignal) => {
+      held = w.flatMap(buffers); signal = s; return new Promise(() => {});
+    }, clear: vi.fn() };
+    const selected = policy(), run = new PrivateWitnessRun(runData, proofId, local, selected);
+    await capture(run);
+    const result = expect(run.finish()).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(25); await result;
+    expect(signal?.aborted).toBe(true);
+    expect(held.every(value => value.every(byte => byte === 0))).toBe(true);
+    expect(local.clear).toHaveBeenCalled();
+    expect(selected.finish).not.toHaveBeenCalled();
+  });
+});
 
 describe('GCP private witness stays in its offscreen execution', () => {
   it('requires the pinned, approved GCP run and matching request ID', () => {

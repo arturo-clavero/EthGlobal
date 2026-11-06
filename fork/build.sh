@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build this repository (the upstream TLSNotary extension with this fork's changes) as an unpacked MV3 extension:
 #   bash fork/build.sh        # -> fork/out/extension (+ fork/out/extension-id.txt with FORK_KEY_FILE)
-# Builds the working tree in place: nothing is cloned, reset or patched. Steps: the GCP and AWS private proof
+# Builds the working tree in place: nothing is cloned, reset or patched. Steps: the GCP, AWS and Azure private proof
 # circuits and browser workers (private-proof/), the pinned TLSNotary WASM prover (core/), the QuickJS handle
 # repair, upstream's webpack build, the built-in plugins, THIRD_PARTY_NOTICES.txt and the manifest.
 # Environment, all optional for a dev build:
@@ -15,17 +15,19 @@
 #   FORK_PLUGIN_DIR       directory of built plugin bundles <id>.js, packaged as the extension's built-in plugins
 #                         (the only plugin code it runs); without it the extension has none
 #   GCP_NOIR_NARGO        the pinned Noir compiler (default: nargo on PATH)
+#   AZURE_NOIR_NARGO      the pinned Noir compiler for the Azure circuits (default: GCP_NOIR_NARGO)
 # One heavy step at a time: npm ci only where node_modules is missing.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
 GCP="$ROOT/private-proof/gcp"
 AWS="$ROOT/private-proof/aws"
+AZURE="$ROOT/private-proof/azure"
 CORE="$ROOT/core"
 WORK="$HERE/.work"; OUT="$HERE/out"
 
 for f in "$HERE/THIRD_PARTY_NOTICES.txt" "$HERE/third-party/wasm-crates.json" "$HERE/third-party/Apache-2.0.txt" \
-  "$CORE/VERSION" "$CORE/prepare-core.sh" "$GCP/package.json" "$AWS/package.json"; do
+  "$CORE/VERSION" "$CORE/prepare-core.sh" "$GCP/package.json" "$AWS/package.json" "$AZURE/package.json"; do
   [ -s "$f" ] || { echo "missing $f: refusing to build" >&2; exit 1; }
 done
 
@@ -38,7 +40,7 @@ else
   KEY_FILE=""; PRODUCTION=0; DEFAULT_NAME="TLSN Extension (dev)"
 fi
 NAME="${FORK_NAME:-$DEFAULT_NAME}"
-DESCRIPTION="${FORK_DESCRIPTION:-Creates TLSNotary proofs of web data in the browser, including private zero-knowledge proofs for GCP and AWS.}"
+DESCRIPTION="${FORK_DESCRIPTION:-Creates TLSNotary proofs of web data in the browser, including private zero-knowledge proofs for GCP, AWS and Azure.}"
 [ "${#DESCRIPTION}" -le 132 ] || { echo "manifest description is ${#DESCRIPTION} characters (max 132)" >&2; exit 1; }
 ICON_DIR=""
 if [ -n "${FORK_ICON_DIR:-}" ]; then
@@ -74,7 +76,7 @@ mkdir -p "$WORK"
 cd "$ROOT"
 [ -d node_modules ] || npm ci --no-audit --no-fund
 # The AWS package resolves the proof runtime through the GCP package, so GCP is installed first.
-for dir in "$GCP" "$AWS"; do
+for dir in "$GCP" "$AWS" "$AZURE"; do
   [ -d "$dir/node_modules" ] || (cd "$dir" && npm ci --ignore-scripts --no-audit --no-fund)
 done
 
@@ -86,6 +88,8 @@ for circuit in "$AWS"/circuits/*/; do
   (cd "$circuit" && "${GCP_NOIR_NARGO:-nargo}" compile)
 done
 node "$AWS/build-artifacts.mjs"
+# Azure compiles its own circuits and the shared GCP ones it reuses, serially, and checks every pin and key.
+AZURE_NOIR_NARGO="${AZURE_NOIR_NARGO:-${GCP_NOIR_NARGO:-nargo}}" node "$AZURE/build-artifacts.mjs"
 PRIVATE_SOURCE="$ROOT/packages/extension/src/gcp-private"
 mkdir -p "$PRIVATE_SOURCE/generated"
 for module in browser-client client-plan authenticated-transcript gcp-structure http-structure json-structure policy verify-bundle; do
@@ -112,6 +116,8 @@ node "$HERE/build-wasm.mjs" "$ROOT"
 node "$HERE/fix-quickjs-handles.mjs" "$ROOT"
 node "$GCP/build-browser.mjs" "$ROOT/packages/extension"
 node "$GCP/build-browser.mjs" "$ROOT/packages/extension" aws
+# Azure: proof worker, portal discovery bundle and the client modules the extension imports from src/azure-private.
+node "$AZURE/build-browser.mjs" "$ROOT/packages/extension"
 # Upstream's `npm run build` (build:deps, then the extension's utils/build.js), with the extension step run through
 # webpack-build.cjs, which records the files webpack put into the bundles (for THIRD_PARTY_NOTICES.txt below).
 EXT_VERSION="$(node -p 'require(process.argv[1]).version' "$ROOT/packages/extension/package.json")"
@@ -119,7 +125,7 @@ rm -f "$WORK/bundled-modules.json"
 { npm run build:deps && (cd packages/extension && NODE_ENV=production node "$HERE/webpack-build.cjs" "$WORK/bundled-modules.json"); } >"$WORK/build.log" 2>&1 \
   || { tail -40 "$WORK/build.log" >&2; echo "build failed, full log: $WORK/build.log" >&2; exit 1; }
 [ -s "$WORK/bundled-modules.json" ] || { echo "the build recorded no bundled modules ($WORK/bundled-modules.json)" >&2; exit 1; }
-node - "$WORK/bundled-modules.json" "$GCP/dist/browser-modules.json" "$AWS/dist/browser-modules.json" <<'NODE'
+node - "$WORK/bundled-modules.json" "$GCP/dist/browser-modules.json" "$AWS/dist/browser-modules.json" "$AZURE/dist/browser-modules.json" <<'NODE'
 const fs = require('node:fs');
 const [main, ...workers] = process.argv.slice(2);
 const files = [...new Set([main, ...workers].flatMap(file => JSON.parse(fs.readFileSync(file))))].sort();
@@ -130,6 +136,7 @@ rm -rf "$OUT/extension"; mkdir -p "$OUT"
 cp -R "$ROOT/packages/extension/build" "$OUT/extension"
 cp -R "$GCP/dist/browser" "$OUT/extension/gcp-private"
 cp -R "$AWS/dist/browser" "$OUT/extension/aws-private"
+cp -R "$AZURE/dist/browser" "$OUT/extension/azure-private"
 # The built-in plugins, byte for byte (builtin-plugins/<id>-<sha256>.js; not web-accessible).
 if [ -d "$STAGE/builtin-plugins" ]; then cp -R "$STAGE/builtin-plugins" "$OUT/extension/builtin-plugins"; fi
 # icon-34 and icon-128 are also web-accessible resources, so the replacements keep upstream's file names.
@@ -141,7 +148,7 @@ fi
 # tlsn-wasm (third-party/wasm-crates.json, made by wasm-crates.mts). Refuses an unknown or copyleft license, a package
 # without license text, or a tlsn-wasm version other than the one the crate list was made for.
 node --no-warnings "$HERE/third-party-notices.mts" --modules "$WORK/bundled-modules.json" --upstream "$ROOT" \
-  --private-proof-root "$GCP" --aws-private-proof-root "$AWS" \
+  --private-proof-root "$GCP" --aws-private-proof-root "$AWS" --azure-private-proof-root "$AZURE" \
   --product "$NAME $EXT_VERSION" --header "$HERE/THIRD_PARTY_NOTICES.txt" --crates "$HERE/third-party/wasm-crates.json" \
   --out "$OUT/extension/THIRD_PARTY_NOTICES.txt"
 [ -s "$OUT/extension/THIRD_PARTY_NOTICES.txt" ] || { echo "no THIRD_PARTY_NOTICES.txt in the extension: refusing to build" >&2; exit 1; }
@@ -176,13 +183,16 @@ const product = process.env.PRODUCT_ORIGINS.split(",").map((o) => {
   if (!/^https?:\/\/[a-z0-9.-]+(:[0-9]+)?$/.test(o)) throw new Error("product origin is not scheme://host[:port]: " + o);
   return o + "/*";
 });
-const hosts = [...new Set([...GITHUB, ...GCP, ...product])];
+const AZURE = ["https://portal.azure.com/*", "https://graph.microsoft.com/*", "https://management.azure.com/*"];
+const hosts = [...new Set([...GITHUB, ...GCP, ...AZURE, ...product])];
 m.host_permissions = [...hosts, ...AWS_CONSOLE, "https://iam.amazonaws.com/*", "https://cloudtrail.us-east-1.amazonaws.com/*"];
 if (m.content_scripts.length !== 1 || m.web_accessible_resources.length !== 1)
   throw new Error("upstream manifest changed: expected one content_scripts and one web_accessible_resources entry");
 m.content_scripts[0].matches = hosts;
 // AWS can request credentials before document_idle installs the capture receiver.
 m.content_scripts.push({ ...m.content_scripts[0], matches: AWS_CONSOLE, run_at: "document_start" });
+// Azure account discovery runs only in the portal, in the isolated world (never the page).
+m.content_scripts.push({ matches: ["https://portal.azure.com/*"], js: ["azure-private/portal-discovery.bundle.js"], run_at: "document_idle", world: "ISOLATED" });
 m.web_accessible_resources[0].matches = [...hosts, ...AWS_CONSOLE];
 delete m.key;
 if (process.env.KEY_FILE) {

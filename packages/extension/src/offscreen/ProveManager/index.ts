@@ -102,13 +102,68 @@ export type ProgressCallback = (data: {
 }) => void;
 
 export class ProveManager {
-  private worker = new Worker(new URL('./worker.ts', import.meta.url));
-  private workerApi = Comlink.wrap<ProverWorkerApi>(this.worker);
-  private initialization?: Promise<void>;
+  // Instance ownership keeps cancellation of an Azure run away from other providers.
+  private worker: Worker | undefined;
+  private api: Comlink.Remote<ProverWorkerApi> | undefined;
+  private disposed = false;
+  private initializing: Promise<void> | undefined;
   private initialized = false;
   private pendingCreates = 0;
   private activeProvers = new Set<string>();
   private pendingCleanup = 0;
+  private cleanupFailed = false;
+  private pending = new Set<(error: Error) => void>();
+  private sockets = new Set<WebSocket>();
+
+  constructor(private readonly initializationThreads?: number) {}
+
+  assertActive(): void {
+    if (this.disposed) throw new Error('PRIVATE_PROVER_DISPOSED');
+  }
+
+  private get workerApi(): Comlink.Remote<ProverWorkerApi> {
+    this.assertActive();
+    if (!this.api) {
+      this.worker = new Worker(new URL('./worker.ts', import.meta.url));
+      this.api = Comlink.wrap<ProverWorkerApi>(this.worker);
+    }
+    return this.api;
+  }
+
+  private withLifetime<T>(operation: () => T | PromiseLike<T>, clearLate?: (value: T) => void): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      if (this.disposed) { reject(new Error('PRIVATE_PROVER_DISPOSED')); return; }
+      const cancel = (error: Error) => reject(error);
+      this.pending.add(cancel);
+      try {
+        Promise.resolve(operation()).then(value => {
+          this.pending.delete(cancel);
+          if (this.disposed) {
+            try { clearLate?.(value); } catch { /* Disposal must settle even for malformed worker output. */ }
+            reject(new Error('PRIVATE_PROVER_DISPOSED'));
+          } else resolve(value);
+        }, error => { this.pending.delete(cancel); reject(error); });
+      } catch (error) { this.pending.delete(cancel); reject(error); }
+    });
+  }
+
+  /** Permanent disposal: callers create a new manager for a new isolated run. */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.initialized = false;
+    this.activeProvers.clear();
+    for (const cancel of this.pending) cancel(new Error('PRIVATE_PROVER_DISPOSED'));
+    this.pending.clear();
+    this.worker?.terminate(); this.worker = undefined; this.api = undefined;
+    for (const socket of this.sockets) {
+      socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null;
+      try { socket.close(); } catch { /* Already closed or failed to connect. */ }
+    }
+    this.sockets.clear();
+    for (const bytes of this.transcriptBytes.values()) { bytes.sent.fill(0); bytes.recv.fill(0); }
+    this.transcriptBytes.clear(); this.sessions.clear(); this.progressCallbacks.clear();
+  }
 
   /** Maps proverId to its session state - each prover has isolated session */
   private sessions: Map<string, SessionState> = new Map();
@@ -137,18 +192,23 @@ export class ProveManager {
     }
   }
 
-  init(): Promise<void> {
-    return this.initialization ??= this.initializeWorker().catch(error => {
-      this.initialization = undefined;
+  async init() {
+    this.assertActive();
+    if (!this.initializing) this.initializing = this.initialize().catch(error => {
+      this.initializing = undefined;
       throw error;
     });
+    return this.initializing;
   }
 
-  private async initializeWorker() {
+  private async initialize() {
+    void this.workerApi;
     // Guard against duplicate listener registration if init() is called more than once.
     if (!this.listenerAdded) {
       this.listenerAdded = true;
-      this.worker.addEventListener('message', (event: MessageEvent) => {
+      const worker = this.worker!;
+      worker.addEventListener('message', (event: MessageEvent) => {
+        if (this.worker !== worker || this.disposed) return;
         if (event.data?.type === 'WASM_PROGRESS') {
           // WASM worker doesn't include proverId in progress messages, so
           // broadcast to all registered callbacks. In practice only one
@@ -165,36 +225,40 @@ export class ProveManager {
       });
     }
 
-    await this.workerApi.init({
+    await this.withLifetime(() => this.workerApi.init({
       loggingLevel: 'Info',
-      hardwareConcurrency: navigator.hardwareConcurrency,
+      hardwareConcurrency: this.initializationThreads ?? navigator.hardwareConcurrency,
       crateFilters: [
         { name: 'yamux', level: 'Info' },
         { name: 'uid_mux', level: 'Info' },
       ],
-    });
+    }));
 
+    this.assertActive();
     this.initialized = true;
     logger.debug('ProveManager initialized');
   }
 
-  /** Retire the idle TLS/WASM heap before a separate local proof worker starts. */
+  /** Release an idle TLS/WASM heap; the next init lazily creates a fresh worker. */
   releaseIdleWorker(): boolean {
-    if (!this.initialized || this.pendingCreates || this.pendingCleanup || this.activeProvers.size) return false;
-    this.worker.terminate();
-    this.worker = new Worker(new URL('./worker.ts', import.meta.url));
-    this.workerApi = Comlink.wrap<ProverWorkerApi>(this.worker);
-    this.initialization = undefined;
+    if (this.disposed || !this.initialized || this.pendingCreates || this.pendingCleanup ||
+        this.activeProvers.size || this.pending.size || this.cleanupFailed) return false;
+    this.worker?.terminate();
+    this.worker = undefined;
+    this.api = undefined;
+    this.initializing = undefined;
     this.initialized = false;
     this.listenerAdded = false;
     return true;
   }
 
   private async allocateProver(config: ProverConfig): Promise<string> {
+    this.assertActive();
     this.pendingCreates++;
     try {
       await this.init();
-      const proverId = await this.workerApi.createProver(config);
+      const proverId = await this.withLifetime(() => this.workerApi.createProver(config));
+      this.assertActive();
       this.activeProvers.add(proverId);
       return proverId;
     } finally {
@@ -213,7 +277,7 @@ export class ProveManager {
     maxSentData: number,
     sessionData: Record<string, string>,
   ): Promise<string> {
-    return new Promise((resolve, reject) => {
+    return this.withLifetime(() => new Promise<string>((resolve, reject) => {
       logger.debug('[ProveManager] Creating session for prover:', proverId);
       const _url = new URL(verifierUrl);
       const protocol = _url.protocol === 'https:' ? 'wss' : 'ws';
@@ -221,8 +285,10 @@ export class ProveManager {
       const sessionWsUrl = `${protocol}://${_url.host}${pathname === '/' ? '' : pathname}/session`;
 
       const ws = new WebSocket(sessionWsUrl);
+      this.sockets.add(ws);
 
       ws.onopen = () => {
+        if (this.disposed || !this.sockets.has(ws)) return;
         logger.debug('[ProveManager] Session WebSocket connected for prover:', proverId);
 
         const registerMsg: ClientMessage = {
@@ -235,6 +301,7 @@ export class ProveManager {
       };
 
       ws.onmessage = (event) => {
+        if (this.disposed || !this.sockets.has(ws)) return;
         try {
           const data = JSON.parse(event.data) as ServerMessage;
 
@@ -337,9 +404,11 @@ export class ProveManager {
       };
 
       ws.onclose = () => {
+        this.sockets.delete(ws);
+        reject(new Error('Session closed before registration'));
         logger.debug('[ProveManager] Session WebSocket closed for prover:', proverId);
       };
-    });
+    }));
   }
 
   async createProver(
@@ -350,6 +419,7 @@ export class ProveManager {
     sessionData: Record<string, string> = {},
     mode: ProverMode = 'Mpc',
   ) {
+    this.assertActive();
     // Create prover in the worker first to get the ID.
     const proverId = await this.allocateProver({
       server_name: serverDns,
@@ -366,6 +436,7 @@ export class ProveManager {
     });
 
     try {
+      this.assertActive();
       // Create isolated session for this prover.
       const sessionUrl = await this.createSession(
         proverId,
@@ -375,9 +446,11 @@ export class ProveManager {
         sessionData,
       );
 
+      this.assertActive();
       // Setup prover with verifier - IoChannel created in worker.
-      await this.workerApi.setupProver(proverId, sessionUrl);
+      await this.withLifetime(() => this.workerApi.setupProver(proverId, sessionUrl));
 
+      this.assertActive();
       return proverId;
     } catch (error) {
       logger.error('[ProveManager] Failed to create prover:', error);
@@ -415,7 +488,8 @@ export class ProveManager {
     });
 
     try {
-      await this.workerApi.setupProverRelay(proverId, Comlink.proxy(onOut));
+      await this.withLifetime(() => this.workerApi.setupProverRelay(proverId, Comlink.proxy(onOut)));
+      this.assertActive();
       return proverId;
     } catch (error) {
       logger.error('[ProveManager] Failed to create relay prover:', error);
@@ -426,12 +500,12 @@ export class ProveManager {
 
   /** Deliver bytes received over the relay (from the host page) to the prover. */
   deliverRelayData(bytes: Uint8Array): void {
-    this.workerApi.deliverToWasm(bytes);
+    void this.withLifetime(() => this.workerApi.deliverToWasm(bytes)).catch(() => {});
   }
 
   /** Signal that the relayed channel closed. */
   signalRelayClosed(): void {
-    this.workerApi.signalRelayClosed();
+    void this.withLifetime(() => this.workerApi.signalRelayClosed()).catch(() => {});
   }
 
   /**
@@ -444,6 +518,7 @@ export class ProveManager {
       recv: RevealRangeWithHandler[];
     },
   ) {
+    this.assertActive();
     const session = this.sessions.get(proverId);
     if (!session) {
       throw new Error('Session not found for prover: ' + proverId);
@@ -486,6 +561,7 @@ export class ProveManager {
       body?: string;
     },
   ) {
+    this.assertActive();
     // Convert headers to the format expected by the worker.
     const headerMap: Map<string, number[]> = new Map();
     Object.entries(options.headers || {}).forEach(([key, value]) => {
@@ -498,28 +574,34 @@ export class ProveManager {
     // Extract path+query from full URL (hyper sends absolute-form if given full URL)
     const parsedUrl = new URL(options.url);
     const requestUri = parsedUrl.pathname + parsedUrl.search;
-    await this.workerApi.sendRequest(proverId, proxyUrl, {
+    try {
+      await this.withLifetime(() => this.workerApi.sendRequest(proverId, proxyUrl, {
       uri: requestUri,
       method: options.method as Method,
       headers: headerMap,
       body: options.body,
-    });
+      }));
+    } finally { for (const bytes of headerMap.values()) bytes.fill(0); headerMap.clear(); }
+    this.assertActive();
 
     // Snapshot transcript bytes now so the approval gate can read them
     // synchronously later without crossing the worker boundary again.
     try {
-      const transcript = await this.workerApi.getTranscript(proverId);
-      this.transcriptBytes.set(proverId, {
-        sent: new Uint8Array(transcript.sent),
-        recv: new Uint8Array(transcript.recv),
-      });
+      const transcript = await this.withLifetime(() => this.workerApi.getTranscript(proverId), value => { value.sent.fill(0); value.recv.fill(0); });
+      try {
+        this.assertActive();
+        this.transcriptBytes.set(proverId, {
+          sent: new Uint8Array(transcript.sent), recv: new Uint8Array(transcript.recv),
+        });
+      } finally { transcript.sent.fill(0); transcript.recv.fill(0); }
     } catch (err) {
+      this.assertActive();
       logger.warn('[ProveManager] Failed to snapshot transcript bytes for', proverId, ':', err);
     }
   }
 
   async transcript(proverId: string) {
-    return this.workerApi.getTranscript(proverId);
+    return this.withLifetime(() => this.workerApi.getTranscript(proverId), value => { value.sent.fill(0); value.recv.fill(0); });
   }
 
   /** Get the cached sent transcript bytes for a prover. Empty if not yet captured. */
@@ -537,7 +619,7 @@ export class ProveManager {
    * Runs in the WASM worker — no transcript bytes transferred to the main thread.
    */
   async computeReveal(proverId: string, handlers: Handler[]) {
-    return this.workerApi.computeReveal(proverId, handlers);
+    return this.withLifetime(() => this.workerApi.computeReveal(proverId, handlers));
   }
 
   async reveal(
@@ -548,7 +630,9 @@ export class ProveManager {
     },
     commitConfig?: Commit,
   ): Promise<RevealOutput> {
-    return this.workerApi.reveal(proverId, { ...revealRanges, server_identity: true }, commitConfig);
+    return this.withLifetime(() => this.workerApi.reveal(proverId, { ...revealRanges, server_identity: true }, commitConfig), value => {
+      for (const item of [...value.sent, ...value.recv]) { item.hash.fill(0); item.blinder.fill(0); }
+    });
   }
 
   /** Hard timeout for getResponse polling (60 seconds). */
@@ -562,6 +646,7 @@ export class ProveManager {
     const deadline = Date.now() + ProveManager.GET_RESPONSE_TIMEOUT_MS;
 
     const poll = async (remaining: number): Promise<VerificationResponse | null> => {
+      this.assertActive();
       const session = this.sessions.get(proverId);
       if (!session) {
         logger.warn('[ProveManager] No session found for proverId:', proverId);
@@ -593,7 +678,7 @@ export class ProveManager {
       );
     };
 
-    return poll(retry);
+    return this.withLifetime(() => poll(retry));
   }
 
   /**
@@ -601,9 +686,14 @@ export class ProveManager {
    */
   closeSession(proverId: string) {
     const session = this.sessions.get(proverId);
-    if (session && session.webSocket.readyState === WebSocket.OPEN) {
+    if (!session) return;
+    const ws = session.webSocket;
+    // Worker-local prover IDs repeat after retirement; detach the old owner first.
+    ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+    this.sockets.delete(ws);
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
       logger.debug('[ProveManager] Closing session WebSocket for prover:', proverId);
-      session.webSocket.close();
+      ws.close();
     }
   }
 
@@ -619,14 +709,19 @@ export class ProveManager {
     // Remove session state, progress callback, and transcript snapshot
     this.sessions.delete(proverId);
     this.progressCallbacks.delete(proverId);
+    const bytes = this.transcriptBytes.get(proverId);
+    bytes?.sent.fill(0); bytes?.recv.fill(0);
     this.transcriptBytes.delete(proverId);
 
-    // Keep retirement blocked until the underlying WASM cleanup has settled.
+    // A disposed worker has already released all its prover memory.
+    if (this.disposed) return;
+    // Do not retire until WASM cleanup settles; failed cleanup blocks retirement.
     this.pendingCleanup++;
     try {
-      await this.workerApi.freeProver(proverId);
+      await this.withLifetime(() => this.workerApi.freeProver(proverId));
       this.activeProvers.delete(proverId);
     } catch (err) {
+      this.cleanupFailed = true;
       logger.warn('[ProveManager] freeProver failed for', proverId, ':', err);
     } finally {
       this.pendingCleanup--;

@@ -29,6 +29,7 @@ const mockWorkerApi = {
 };
 
 const mockAddEventListener = vi.fn();
+const mockWorkers: Array<{ terminate: ReturnType<typeof vi.fn> }> = [];
 
 // Provide WebSocket constants (used by closeSession / sendRevealConfig)
 vi.stubGlobal('WebSocket', {
@@ -46,6 +47,8 @@ vi.mock('comlink', () => ({
 vi.stubGlobal(
   'Worker',
   class {
+    constructor() { mockWorkers.push(this); }
+    terminate = vi.fn();
     addEventListener = mockAddEventListener;
     postMessage = vi.fn();
   },
@@ -59,6 +62,7 @@ describe('ProveManager', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockWorkers.length = 0;
     pm = new ProveManager();
   });
 
@@ -302,5 +306,80 @@ describe('ProveManager', () => {
       expect(callsA).toEqual([]);
       expect(callsB).toEqual(['msg']);
     });
+  });
+});
+
+
+describe('isolated native worker disposal', () => {
+  it('rejects initialization cancellation and cannot publish/recreate a worker after late completion', async () => {
+    let complete!: () => void;
+    mockWorkerApi.init.mockImplementationOnce(() => new Promise<void>(resolve => { complete = resolve; }));
+    const manager = new ProveManager();
+    const initializing = manager.init();
+    const rejected = expect(initializing).rejects.toThrow('PRIVATE_PROVER_DISPOSED');
+    const worker = mockWorkers.at(-1)!;
+    manager.dispose(); manager.dispose();
+    await rejected;
+    complete(); await Promise.resolve();
+    expect(worker.terminate).toHaveBeenCalledTimes(1);
+    await expect(manager.init()).rejects.toThrow('PRIVATE_PROVER_DISPOSED');
+    const replacement = new ProveManager();
+    await replacement.init();
+    expect(mockWorkers.at(-1)).not.toBe(worker);
+    replacement.dispose();
+  });
+
+  it('cancels a pending worker call and erases snapshots without terminating another manager', async () => {
+    const normal = new ProveManager(); await normal.init();
+    const normalWorker = mockWorkers.at(-1)!;
+    const azure = new ProveManager(); await azure.init();
+    const azureWorker = mockWorkers.at(-1)!;
+    const sent = new Uint8Array([1, 2]), recv = new Uint8Array([3, 4]);
+    (azure as unknown as { transcriptBytes: Map<string, unknown> }).transcriptBytes.set('private', { sent, recv });
+    let complete!: () => void;
+    mockWorkerApi.sendRequest.mockImplementationOnce(() => new Promise<void>(resolve => { complete = resolve; }));
+    const pending = azure.sendRequest('private', undefined, { url: 'https://example.test/', headers: { Authorization: 'private-test-token' } });
+    const rejected = expect(pending).rejects.toThrow('PRIVATE_PROVER_DISPOSED');
+    const headers = mockWorkerApi.sendRequest.mock.calls.at(-1)![2].headers as Map<string, number[]>;
+    const secret = headers.get('Authorization')!;
+    azure.dispose(); await rejected;
+    expect([...sent, ...recv, ...secret].every(value => value === 0)).toBe(true);
+    expect(headers.size).toBe(0);
+    expect(azureWorker.terminate).toHaveBeenCalledOnce();
+    expect(normalWorker.terminate).not.toHaveBeenCalled();
+    complete(); await Promise.resolve();
+    await expect(normal.transcript('normal')).resolves.toEqual({ sent: [], recv: [] });
+    normal.dispose();
+  });
+
+  it('settles cleanup on disposal even when worker free never responds', async () => {
+    const normal = new ProveManager(); await normal.init();
+    const normalWorker = mockWorkers.at(-1)!;
+    const manager = new ProveManager(); await manager.init();
+    const worker = mockWorkers.at(-1)!;
+    let complete!: () => void;
+    mockWorkerApi.freeProver.mockImplementationOnce(() => new Promise<void>(resolve => { complete = resolve; }));
+    const cleanup = manager.cleanupProver('held-cleanup');
+    manager.dispose();
+    await expect(cleanup).resolves.toBeUndefined();
+    expect(worker.terminate).toHaveBeenCalledOnce();
+    expect(normalWorker.terminate).not.toHaveBeenCalled();
+    const count = mockWorkers.length;
+    complete(); await Promise.resolve(); await Promise.resolve();
+    expect(mockWorkers.length).toBe(count);
+    await expect(manager.init()).rejects.toThrow('PRIVATE_PROVER_DISPOSED');
+    normal.dispose();
+  });
+
+  it('erases late transcript delivery after disposal', async () => {
+    const manager = new ProveManager(); await manager.init();
+    let deliver!: (value: { sent: number[]; recv: number[] }) => void;
+    mockWorkerApi.getTranscript.mockImplementationOnce(() => new Promise(resolve => { deliver = resolve; }));
+    const pending = manager.transcript('private');
+    const rejected = expect(pending).rejects.toThrow('PRIVATE_PROVER_DISPOSED');
+    manager.dispose(); await rejected;
+    const late = { sent: [11, 12], recv: [13, 14] };
+    deliver(late); await Promise.resolve(); await Promise.resolve();
+    expect(late).toEqual({ sent: [0, 0], recv: [0, 0] });
   });
 });

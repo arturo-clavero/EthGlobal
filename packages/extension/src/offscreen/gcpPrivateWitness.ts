@@ -39,7 +39,7 @@ export interface GcpPrivateProofModule extends PrivateProofModule {
   prove(witnesses: readonly GcpPrivateWitness[], signal: AbortSignal): Promise<{ proofs: GcpPrivateProof[] }>;
 }
 interface PrivateWitnessPolicy {
-  method: 'GCP_WORK' | 'AWS_ACCOUNT';
+  method: 'GCP_WORK' | 'AWS_ACCOUNT' | 'AZURE_WORK_PRIVATE';
   steps: readonly { step: string; host: string }[];
   nonceMac?: string;
   proveTimeoutMs: number;
@@ -129,6 +129,8 @@ export class PrivateWitnessRun {
     this.run = { ...run };
     this.nonceMac = policy.nonceMac;
   }
+  assertActive(): void { if (this.closed) fail(); }
+
   begin(session: Record<string, string>, serverName: string, relay: boolean): void {
     const expected = this.policy.steps[this.witnesses.length];
     if (this.closed || this.activeHost || !expected || relay || session.mode !== 'Proxy' ||

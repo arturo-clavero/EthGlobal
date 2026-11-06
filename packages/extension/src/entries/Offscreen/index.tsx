@@ -7,8 +7,11 @@ import { getStoredLogLevel } from '../../utils/logLevelStorage';
 import type { OffscreenMessage } from '../../types/messages';
 import { prepareBuiltInRun, readPackagedFile } from '../../offscreen/builtinRun';
 import { runSessionData } from '../../offscreen/pluginHash';
+import { validateAzureDiscoverySelection } from '../../azure-private/discovery-selection.mjs';
+import { createAzurePrivateModule } from '../../azure-private/browser-client.mjs';
+import { createAzurePrivateRun } from '../../offscreen/azurePrivateWitness';
 import { createGcpPrivateModule } from '../../gcp-private/browser-client.mjs';
-import { gcpPrivateDiagnostic } from '../../offscreen/gcpPrivateWitness';
+import { PrivateWitnessRun, gcpPrivateDiagnostic } from '../../offscreen/gcpPrivateWitness';
 import { createAwsPrivateModule } from '../../aws-private/browser-client.mjs';
 import { AwsPrivateWitnessRun } from '../../offscreen/awsPrivateWitness';
 
@@ -28,6 +31,13 @@ const OffscreenApp: React.FC = () => {
     // Listen for messages from background script
     browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.MessageSender) => {
       const request = msg as OffscreenMessage;
+      const cancellation = msg as { type?: string; requestId?: unknown };
+      if (cancellation.type === 'CANCEL_AZURE_PRIVATE_OFFSCREEN') {
+        if (sender.id !== browser.runtime.id || sender.tab !== undefined ||
+            sender.url !== browser.runtime.getURL('background.bundle.js') || typeof cancellation.requestId !== 'string') return Promise.resolve({ ok: false });
+        return sessionManager.cancelAzurePrivateRun(cancellation.requestId)
+          .then(ok => ({ ok })).catch(() => ({ ok: false }));
+      }
       // Example message handling
       if (request.type === 'PROCESS_DATA') {
         return Promise.resolve({
@@ -64,11 +74,55 @@ const OffscreenApp: React.FC = () => {
             logger.warn('RUN_BUILTIN_OFFSCREEN refused:', prepared.error);
             return { success: false, error: prepared.error, requestId: request.requestId };
           }
-          const execute = async (privateModule?: ReturnType<typeof createGcpPrivateModule> | AwsPrivateWitnessRun) => {
+          const execute = async (privateModule?: ReturnType<typeof createGcpPrivateModule> | PrivateWitnessRun,
+              selection?: ReturnType<typeof validateAzureDiscoverySelection>) => {
             const sm = await sessionManager.awaitInit();
             return sm.executePlugin(prepared.code, request.requestId ?? undefined,
-              runSessionData(request.sessionData, prepared.sha256), privateModule);
+              runSessionData(request.sessionData, prepared.sha256), privateModule, selection);
           };
+          if (request.pluginId === 'azure-private-work') {
+            if (privateRunning || !request.requestId) return { success: false, error: 'AZURE_PRIVATE_PROVING_FAILED' };
+            let module: ReturnType<typeof createAzurePrivateModule> | undefined;
+            let privateRun: PrivateWitnessRun;
+            let selection: ReturnType<typeof validateAzureDiscoverySelection> | undefined;
+            try {
+              const params = JSON.parse(request.values.params);
+              if (!params || typeof params !== 'object' || Array.isArray(params) ||
+                  Object.keys(params).length !== 1 || !Object.hasOwn(params, 'privateAttempt')) throw new Error();
+              selection = validateAzureDiscoverySelection(request.azureDiscoverySelection, params.privateAttempt);
+              module = createAzurePrivateModule({ attempt: params.privateAttempt,
+                workerUrl: browser.runtime.getURL('azure-private/browser-worker.js'),
+                onProgress: ({ completedProofs, totalProofs }) => {
+                  browser.runtime.sendMessage({ type: 'PLUGIN_PROGRESS', requestId: request.requestId,
+                    progress: { method: 'AZURE_WORK_PRIVATE', status: 'busy', index: completedProofs, total: totalProofs } }).catch(() => {});
+                },
+              });
+              privateRun = createAzurePrivateRun(runSessionData(request.sessionData, prepared.sha256),
+                request.requestId, module, params.privateAttempt);
+            } catch { module?.clear(); return { success: false, error: 'AZURE_PRIVATE_PROVING_FAILED' }; }
+            privateRunning = true;
+            const activeModule = module;
+            const stopAzure = () => {
+              privateRun.clear();
+              void sessionManager.cancelAzurePrivateRun(request.requestId!).catch(() => {});
+            };
+            const heartbeat = setInterval(() => {
+              browser.runtime.sendMessage({ type: 'AZURE_PRIVATE_HEARTBEAT', requestId: request.requestId })
+                .then(reply => {
+                  if (!reply || typeof reply !== 'object' || !('ok' in reply) || reply.ok !== true) stopAzure();
+                }).catch(stopAzure);
+            }, 20_000);
+            void (async () => {
+              try {
+                const result = await execute(privateRun, selection);
+                await browser.runtime.sendMessage({ type: 'AZURE_PRIVATE_COMPLETE', requestId: request.requestId, success: true, result });
+              } catch {
+                await browser.runtime.sendMessage({ type: 'AZURE_PRIVATE_COMPLETE', requestId: request.requestId,
+                  success: false, error: 'AZURE_PRIVATE_PROVING_FAILED' }).catch(() => {});
+              } finally { selection = undefined; clearInterval(heartbeat); privateRun.clear(); activeModule.clear(); privateRunning = false; }
+            })();
+            return { success: true, pending: true, requestId: request.requestId };
+          }
           if (request.pluginId === 'gcp-work' || request.pluginId === 'aws-private-work') {
             const aws = request.pluginId === 'aws-private-work';
             const privateError = aws ? 'AWS_PRIVATE_PROVING_FAILED' : 'GCP_PRIVATE_PROVING_FAILED';

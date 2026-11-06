@@ -1,3 +1,4 @@
+import type { AzureDiscoverySelection } from '../azure-private/discovery-selection.mjs';
 import Host, { canonicalizeHandler } from '@tlsn/plugin-sdk';
 import { ProveManager } from './ProveManager';
 import type { RevealRangeWithHandler } from './ProveManager';
@@ -132,7 +133,8 @@ export class SessionManager {
       },
     });
     this.proveManager = new ProveManager();
-    this.initPromise = this.proveManager.init();
+    // Native WASM is initialized only for a run that actually uses this manager.
+    this.initPromise = Promise.resolve();
   }
 
   private static getChromeRuntime(): ChromeRuntimeLike {
@@ -167,8 +169,8 @@ export class SessionManager {
     requestId: string | null,
     execSessionData: Record<string, string> | null,
     privateRun?: PrivateWitnessRun,
+    proveManager: ProveManager = this.proveManager,
   ): Host {
-    const proveManager = this.proveManager;
     let hostRef: Host | null = null;
     // Tracks the active managed window for this execution. Captured from
     // openWindow() / renderPluginUi callbacks so the approval gate can render
@@ -274,6 +276,8 @@ export class SessionManager {
           emitProgress('RELAY_LIMITS', 0.02, JSON.stringify({ maxSentData, maxRecvData, mode }));
         }
 
+        await proveManager.init();
+        privateRun?.assertActive();
         const proverId = isRelay
           ? await proveManager.createProverRelay(
               url.hostname,
@@ -302,6 +306,7 @@ export class SessionManager {
         }
 
         try {
+          privateRun?.assertActive();
           emitBoth('SESSION_SETUP', 0.15, `${modeLabel} session established`);
 
           // In Proxy mode the prover↔server traffic is tunneled through the
@@ -318,13 +323,14 @@ export class SessionManager {
 
           // Send request via ProveManager which handles IoChannel creation in the worker.
           emitBoth('SENDING_REQUEST', 0.3, 'Sending request...');
-          await this.proveManager.sendRequest(proverId, workerProxyUrl, {
+          await proveManager.sendRequest(proverId, workerProxyUrl, {
             url: requestOptions.url,
             method: requestOptions.method as Method,
             headers: requestOptions.headers,
             body: requestOptions.body,
           });
 
+          privateRun?.assertActive();
           // Compute reveal ranges via WASM (parses HTTP transcripts + maps handlers to byte ranges)
           emitBoth('PROCESSING_TRANSCRIPT', 0.5, 'Processing transcript...');
           const { sentRanges, recvRanges, sentRangesWithHandlers, recvRangesWithHandlers, commit } =
@@ -334,6 +340,7 @@ export class SessionManager {
               () => proveManager.computeReveal(proverId, proverOptions.handlers),
             ) : await proveManager.computeReveal(proverId, proverOptions.handlers);
 
+          privateRun?.assertActive();
           if (!privateRun) {
             logger.debug('sentRanges', sentRanges);
             logger.debug('recvRanges', recvRanges);
@@ -372,6 +379,7 @@ export class SessionManager {
             });
           }
 
+          privateRun?.assertActive();
           // Send reveal config (ranges + handlers) to verifier BEFORE calling reveal().
           // Relay mode has no server control channel — the WASM verifier in the
           // other browser learns the revealed ranges directly through the MPC.
@@ -383,6 +391,7 @@ export class SessionManager {
             });
           }
 
+          privateRun?.assertActive();
           // Reveal the ranges (and hash-commit ranges if any handlers use action: HASH).
           // openings.sent[i] / openings.recv[i] expose { hash, blinder } for each
           // hash-committed range, so callers can later prove H(plaintext || blinder)
@@ -394,6 +403,7 @@ export class SessionManager {
             commit,
           );
           if (privateRun) privateOpenings = openings;
+          privateRun?.assertActive();
 
           // Get structured response from verifier. In relay mode the result lives
           // on the verifying browser (its own verify() output) — there is no
@@ -403,6 +413,7 @@ export class SessionManager {
             ? { results: [], relay: true }
             : await proveManager.getResponse(proverId);
 
+          privateRun?.assertActive();
           emitBoth('COMPLETE', 1.0, 'Complete');
 
           if (privateRun) return await privateRun.accept(
@@ -424,6 +435,10 @@ export class SessionManager {
           }
           // Always clean up prover resources to prevent memory leaks
           await proveManager.cleanupProver(proverId);
+          // Azure collects receipts serially; release each completed native heap.
+          if (privateRun && execSessionData?.method === 'AZURE_WORK_PRIVATE') {
+            proveManager.releaseIdleWorker();
+          }
         }
       },
       onRenderPluginUi: (windowId: number, result: DomJson) => {
@@ -467,6 +482,17 @@ export class SessionManager {
         if (response?.type === 'WINDOW_OPENED' && response.payload?.windowId) {
           activeWindowId = response.payload.windowId;
           this.runWindows.set(host, activeWindowId); // For navigate()
+          if (privateRun && execSessionData?.method === 'AZURE_WORK_PRIVATE' && requestId) {
+            const tabId = response.payload.tabId;
+            if (!Number.isSafeInteger(tabId) || tabId < 0) throw new Error('AZURE_PRIVATE_WINDOW_INVALID');
+            this.azureWindowTabs.set(host, tabId);
+            try { privateRun.assertActive(); }
+            catch (error) {
+              await chromeRuntime.sendMessage({ type: 'CLOSE_AZURE_PRIVATE_WINDOW', requestId,
+                windowId: activeWindowId, tabId }).catch(() => {});
+              throw error;
+            }
+          }
         }
 
         return response;
@@ -500,6 +526,23 @@ export class SessionManager {
 
   /** The window each run opened (navigate() may only move that one). */
   private runWindows = new WeakMap<Host, number>();
+  private azureWindowTabs = new WeakMap<Host, number>();
+  private azureCancellations = new Map<string, { run: PrivateWitnessRun; host?: Host; manager: ProveManager; cancelled: boolean }>();
+
+  /** Called only by the compiled, background-authenticated Azure cancellation route. */
+  async cancelAzurePrivateRun(requestId: string): Promise<boolean> {
+    const active = this.azureCancellations.get(requestId);
+    if (!active) return false;
+    active.cancelled = true; active.run.clear(); active.manager.dispose();
+    const windowId = active.host ? this.runWindows.get(active.host) : undefined;
+    if (windowId !== undefined) {
+      const tabId = this.azureWindowTabs.get(active.host!);
+      const reply = await SessionManager.getChromeRuntime().sendMessage({ type: 'CLOSE_AZURE_PRIVATE_WINDOW', requestId, windowId, tabId });
+      return !!reply && typeof reply === 'object' && 'ok' in reply && reply.ok === true;
+    }
+    return true;
+  }
+
 
   /**
    * `navigate(url)` sends the run's own window to GitHub's
@@ -535,6 +578,7 @@ export class SessionManager {
     sessionData?: Record<string, string>,
     // Supplied only by a compiled offscreen caller after prepareBuiltInRun(), never a message field.
     privateProof?: GcpPrivateProofModule | PrivateWitnessRun,
+    azureDiscoverySelection?: AzureDiscoverySelection,
   ): Promise<unknown> {
     const chromeRuntime = SessionManager.getChromeRuntime();
     if (!chromeRuntime.onMessage) {
@@ -542,15 +586,40 @@ export class SessionManager {
     }
 
     const execRequestId = requestId || null;
+    if (privateProof instanceof PrivateWitnessRun && sessionData?.method === 'AZURE_WORK_PRIVATE' && !azureDiscoverySelection) {
+      throw new Error('AZURE_DISCOVERY_UNAVAILABLE');
+    }
 
+    // Bound the persistent Rayon pool; session-executor concurrency is separate.
+    const azureCancellation = privateProof instanceof PrivateWitnessRun && sessionData?.method === 'AZURE_WORK_PRIVATE' && requestId
+      ? { run: privateProof, host: undefined as Host | undefined, manager: new ProveManager(2), cancelled: false } : undefined;
+    if (azureCancellation) {
+      if (this.azureCancellations.has(requestId!)) throw new Error('AZURE_PRIVATE_RUN_INVALID');
+      this.azureCancellations.set(requestId!, azureCancellation);
+    }
     // Extract plugin config for permission validation (scoped to this execution)
-    const pluginConfig = await this.extractConfig(code);
+    let pluginConfig;
+    try {
+      pluginConfig = await this.extractConfig(code);
+      if (azureCancellation?.cancelled) throw new Error('AZURE_PRIVATE_CANCELLED');
+      azureCancellation?.run.assertActive();
+    } catch (error) {
+      if (azureCancellation) { this.azureCancellations.delete(requestId!); azureCancellation.run.clear(); azureCancellation.manager.dispose(); }
+      throw error;
+    }
     if (!privateProof) logger.debug('[SessionManager] Extracted plugin config:', pluginConfig);
 
     // Create a per-execution Host with callbacks that close over this execution's state
     const privateRun = privateProof instanceof PrivateWitnessRun ? privateProof :
       privateProof ? new GcpPrivateWitnessRun(sessionData || {}, execRequestId, privateProof) : undefined;
-    const host = this.createExecutionHost(pluginConfig, execRequestId, sessionData || null, privateRun);
+    const host = this.createExecutionHost(pluginConfig, execRequestId, sessionData || null, privateRun,
+      azureCancellation?.manager ?? this.proveManager);
+    if (azureCancellation) azureCancellation.host = host;
+    if (azureCancellation) host.addCapability('takeAzureDiscovery', () => {
+      azureCancellation.run.assertActive();
+      if (!azureDiscoverySelection) throw new Error('AZURE_DISCOVERY_UNAVAILABLE');
+      const selection = azureDiscoverySelection; azureDiscoverySelection = undefined; return selection;
+    });
     this.addPageProgress(host, execRequestId, sessionData || null);
     this.addNavigate(host, execRequestId, sessionData || null);
     if (privateRun instanceof AwsPrivateWitnessRun) host.addCapability('collectAwsPrivate', (captureId: unknown) => {
@@ -579,7 +648,9 @@ export class SessionManager {
       const sender = source as { id?: unknown; url?: unknown; tab?: unknown };
       if (message.type === 'WINDOW_CLOSED' && typeof message.windowId === 'number' &&
           message.windowId === this.runWindows.get(host) && sender.id === chromeRuntime.id && sender.tab === undefined &&
-          (sender.url === undefined || sender.url === chromeRuntime.getURL('background.bundle.js'))) privateRun.clear();
+          (sender.url === undefined || sender.url === chromeRuntime.getURL('background.bundle.js'))) {
+        privateRun.clear(); azureCancellation?.manager.dispose();
+      }
     };
     if (privateRun) chromeRuntime.onMessage.addListener(cancelPrivateOnClose);
     let progressTimer: ReturnType<typeof setInterval> | undefined;
@@ -608,8 +679,10 @@ export class SessionManager {
           },
         },
       });
+      // Release the dedicated native WASM worker before allocating ZK workers.
+      azureCancellation?.manager.dispose();
       // Ignore done() data for private runs: only the compiled proof module may cross the page boundary.
-      if (privateRun) this.proveManager.releaseIdleWorker();
+      if (privateRun && !azureCancellation) this.proveManager.releaseIdleWorker();
       if (privateRun instanceof GcpPrivateWitnessRun && execRequestId) {
         const started = Date.now();
         let completed = 0, lastProgress = started;
@@ -633,12 +706,17 @@ export class SessionManager {
     } finally {
       clearInterval(progressTimer);
       if (execRequestId) this.gcpProgress.delete(execRequestId);
+      if (azureCancellation) { this.azureCancellations.delete(requestId!); azureCancellation.manager.dispose(); }
       if (privateRun) chromeRuntime.onMessage.removeListener(cancelPrivateOnClose);
       privateRun?.clear();
+      azureDiscoverySelection = undefined;
       const windowId = privateRun ? this.runWindows.get(host) : undefined;
       if (windowId !== undefined) {
         this.runWindows.delete(host);
-        await chromeRuntime.sendMessage({ type: 'CLOSE_WINDOW', windowId }).catch(() => {});
+        const tabId = this.azureWindowTabs.get(host); this.azureWindowTabs.delete(host);
+        await chromeRuntime.sendMessage(azureCancellation
+          ? { type: 'CLOSE_AZURE_PRIVATE_WINDOW', requestId, windowId, tabId }
+          : { type: 'CLOSE_WINDOW', windowId }).catch(() => {});
       }
     }
   }
