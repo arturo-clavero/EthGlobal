@@ -1,0 +1,6 @@
+[package]
+name = "gcp_private_identity_scope"
+type = "bin"
+
+[dependencies]
+gcp_private_json = { path = "../lib" }

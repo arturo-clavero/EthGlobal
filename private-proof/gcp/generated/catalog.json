@@ -1,0 +1,1440 @@
+{
+  "digest": "cdcac715ac276a19539a5af986feadce8d8c372a89295d7ae7bd42b8e692f602",
+  "schema": "gcp-private-canonical-v1",
+  "contractVersion": "gcp-groups-v1",
+  "sources": [
+    {
+      "path": "apps/backend/src/verification/methods/gcp-work/source.ts",
+      "sha256": "189d95989a3e2de03d2af7797e5289acd8eb09b2d26aeb8ebd5cfa243155ef9b"
+    },
+    {
+      "path": "apps/backend/src/verification/methods/gcp-work/catalog.ts",
+      "sha256": "363150deba547876f5de16f9ce91670c82fdcc71cfe7c34f5bd50998268739e2"
+    }
+  ],
+  "scope": {
+    "projectLength": [
+      6,
+      30
+    ],
+    "emailMaxLength": 254,
+    "windowDays": [
+      7,
+      30,
+      90
+    ],
+    "cutoffMs": [
+      0,
+      253402300799999
+    ],
+    "isoBytes": 24,
+    "insertions": [
+      "projectId",
+      "projectId",
+      "email",
+      "startIso",
+      "cutoffIso"
+    ],
+    "sourceValidationPatterns": {
+      "projectId": "/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/",
+      "email": "/^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$/"
+    },
+    "excludedEmailSuffixesIgnoringCase": [
+      ".gserviceaccount.com"
+    ],
+    "insertionRule": "Constrain the source alphabets and identity binding before inserting raw bytes; no JSON escapes are permitted."
+  },
+  "limits": {
+    "transcriptBytesPerDirection": 16384,
+    "batchBodyBytes": 10240,
+    "groupsPerBatch": 6
+  },
+  "batchContentType": "multipart/mixed; boundary=gcp_groups_v1",
+  "batchSuffix": "LITERAL_52",
+  "existingPlanStableAcrossScopeLengths": false,
+  "batches": [
+    {
+      "step": "groups:0",
+      "groupIds": [
+        "g0",
+        "g1",
+        "g2",
+        "g3"
+      ],
+      "maxBodyBytes": 9891
+    },
+    {
+      "step": "groups:1",
+      "groupIds": [
+        "g4",
+        "g5",
+        "g6",
+        "g7",
+        "g8"
+      ],
+      "maxBodyBytes": 9958
+    },
+    {
+      "step": "groups:2",
+      "groupIds": [
+        "g9",
+        "g10",
+        "g11",
+        "g12",
+        "g13"
+      ],
+      "maxBodyBytes": 8411
+    },
+    {
+      "step": "groups:3",
+      "groupIds": [
+        "g14",
+        "g15",
+        "g16",
+        "g17",
+        "g18",
+        "g19"
+      ],
+      "maxBodyBytes": 9854
+    },
+    {
+      "step": "groups:4",
+      "groupIds": [
+        "g20",
+        "g21",
+        "g22"
+      ],
+      "maxBodyBytes": 4842
+    }
+  ],
+  "groups": [
+    {
+      "id": "g0",
+      "technology": "gcp-cloud-run",
+      "skills": [
+        "serverless-deployment"
+      ],
+      "predicates": [
+        {
+          "id": "run-service-create",
+          "service": "run.googleapis.com",
+          "method": "google.cloud.run.v2.Services.CreateService",
+          "requiresCompletion": false
+        },
+        {
+          "id": "run-service-update",
+          "service": "run.googleapis.com",
+          "method": "google.cloud.run.v2.Services.UpdateService",
+          "requiresCompletion": false
+        },
+        {
+          "id": "run-job-create",
+          "service": "run.googleapis.com",
+          "method": "google.cloud.run.v2.Jobs.CreateJob",
+          "requiresCompletion": false
+        },
+        {
+          "id": "run-job-update",
+          "service": "run.googleapis.com",
+          "method": "google.cloud.run.v2.Jobs.UpdateJob",
+          "requiresCompletion": false
+        },
+        {
+          "id": "run-service-replace-v1",
+          "service": "run.googleapis.com",
+          "method": "google.cloud.run.v1.Services.ReplaceService",
+          "requiresCompletion": false
+        },
+        {
+          "id": "run-service-create-v1",
+          "service": "run.googleapis.com",
+          "method": "google.cloud.run.v1.Services.CreateService",
+          "requiresCompletion": false
+        }
+      ],
+      "multipartPrefix": "LITERAL_0",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_6"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g1",
+      "technology": "gcp-cloud-build",
+      "skills": [
+        "build-operations"
+      ],
+      "predicates": [
+        {
+          "id": "build-create",
+          "service": "cloudbuild.googleapis.com",
+          "method": "google.devtools.cloudbuild.v1.CloudBuild.CreateBuild",
+          "requiresCompletion": true
+        },
+        {
+          "id": "build-trigger-create",
+          "service": "cloudbuild.googleapis.com",
+          "method": "google.devtools.cloudbuild.v1.CloudBuild.CreateBuildTrigger",
+          "requiresCompletion": false
+        },
+        {
+          "id": "build-trigger-update",
+          "service": "cloudbuild.googleapis.com",
+          "method": "google.devtools.cloudbuild.v1.CloudBuild.UpdateBuildTrigger",
+          "requiresCompletion": false
+        },
+        {
+          "id": "build-cancel",
+          "service": "cloudbuild.googleapis.com",
+          "method": "google.devtools.cloudbuild.v1.CloudBuild.CancelBuild",
+          "requiresCompletion": false
+        }
+      ],
+      "multipartPrefix": "LITERAL_8",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_9"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g2",
+      "technology": "gcp-compute-engine",
+      "skills": [
+        "compute-administration"
+      ],
+      "predicates": [
+        {
+          "id": "compute-vm-create",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.instances.insert",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-vm-start",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.instances.start",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-vm-stop",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.instances.stop",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-vm-size",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.instances.setMachineType",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-template-create",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.instanceTemplates.insert",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-regional-template-create",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.regionInstanceTemplates.insert",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-disk-create",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.disks.insert",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-disk-resize",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.disks.resize",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-snapshot-create",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.disks.createSnapshot",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-image-create",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.images.insert",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-group-create",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.instanceGroupManagers.insert",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-group-resize",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.instanceGroupManagers.resize",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-autoscaler-create",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.autoscalers.insert",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-autoscaler-update",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.autoscalers.patch",
+          "requiresCompletion": true
+        }
+      ],
+      "multipartPrefix": "LITERAL_10",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_11"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g3",
+      "technology": "gcp-vpc",
+      "skills": [
+        "network-configuration"
+      ],
+      "predicates": [
+        {
+          "id": "compute-network-create",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.networks.insert",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-network-update",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.networks.patch",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-subnet-create",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.subnetworks.insert",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-subnet-update",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.subnetworks.patch",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-firewall-create",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.firewalls.insert",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-firewall-update",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.firewalls.patch",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-firewall-replace",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.firewalls.update",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-route-create",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.routes.insert",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-router-create",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.routers.insert",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-router-update",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.routers.patch",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-backend-create",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.backendServices.insert",
+          "requiresCompletion": true
+        },
+        {
+          "id": "compute-forwarding-rule-create",
+          "service": "compute.googleapis.com",
+          "method": "v1.compute.forwardingRules.insert",
+          "requiresCompletion": true
+        }
+      ],
+      "multipartPrefix": "LITERAL_12",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_13"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g4",
+      "technology": "gcp-cloud-dns",
+      "skills": [
+        "dns-administration"
+      ],
+      "predicates": [
+        {
+          "id": "dns-zone-create",
+          "service": "dns.googleapis.com",
+          "method": "dns.managedZones.create",
+          "requiresCompletion": false
+        },
+        {
+          "id": "dns-record-change",
+          "service": "dns.googleapis.com",
+          "method": "dns.changes.create",
+          "requiresCompletion": false
+        }
+      ],
+      "multipartPrefix": "LITERAL_14",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_15"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g5",
+      "technology": "gcp-gke",
+      "skills": [
+        "kubernetes-platform-operations"
+      ],
+      "predicates": [
+        {
+          "id": "gke-cluster-create",
+          "service": "container.googleapis.com",
+          "method": "google.container.v1.ClusterManager.CreateCluster",
+          "requiresCompletion": true
+        },
+        {
+          "id": "gke-cluster-update",
+          "service": "container.googleapis.com",
+          "method": "google.container.v1.ClusterManager.UpdateCluster",
+          "requiresCompletion": true
+        },
+        {
+          "id": "gke-node-pool-create",
+          "service": "container.googleapis.com",
+          "method": "google.container.v1.ClusterManager.CreateNodePool",
+          "requiresCompletion": true
+        },
+        {
+          "id": "gke-node-pool-size",
+          "service": "container.googleapis.com",
+          "method": "google.container.v1.ClusterManager.SetNodePoolSize",
+          "requiresCompletion": true
+        },
+        {
+          "id": "gke-node-pool-autoscaling",
+          "service": "container.googleapis.com",
+          "method": "google.container.v1.ClusterManager.SetNodePoolAutoscaling",
+          "requiresCompletion": true
+        },
+        {
+          "id": "gke-network-policy",
+          "service": "container.googleapis.com",
+          "method": "google.container.v1.ClusterManager.SetNetworkPolicy",
+          "requiresCompletion": true
+        }
+      ],
+      "multipartPrefix": "LITERAL_16",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_17"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g6",
+      "technology": "gcp-iam",
+      "skills": [
+        "identity-lifecycle"
+      ],
+      "predicates": [
+        {
+          "id": "iam-service-account-create",
+          "service": "iam.googleapis.com",
+          "method": "google.iam.admin.v1.CreateServiceAccount",
+          "requiresCompletion": false
+        },
+        {
+          "id": "iam-service-account-update",
+          "service": "iam.googleapis.com",
+          "method": "google.iam.admin.v1.PatchServiceAccount",
+          "requiresCompletion": false
+        },
+        {
+          "id": "iam-service-account-disable",
+          "service": "iam.googleapis.com",
+          "method": "google.iam.admin.v1.DisableServiceAccount",
+          "requiresCompletion": false
+        },
+        {
+          "id": "iam-service-account-delete",
+          "service": "iam.googleapis.com",
+          "method": "google.iam.admin.v1.DeleteServiceAccount",
+          "requiresCompletion": false
+        },
+        {
+          "id": "iam-key-disable",
+          "service": "iam.googleapis.com",
+          "method": "google.iam.admin.v1.DisableServiceAccountKey",
+          "requiresCompletion": false
+        },
+        {
+          "id": "iam-key-delete",
+          "service": "iam.googleapis.com",
+          "method": "google.iam.admin.v1.DeleteServiceAccountKey",
+          "requiresCompletion": false
+        },
+        {
+          "id": "iam-role-create",
+          "service": "iam.googleapis.com",
+          "method": "google.iam.admin.v1.CreateRole",
+          "requiresCompletion": false
+        },
+        {
+          "id": "iam-role-update",
+          "service": "iam.googleapis.com",
+          "method": "google.iam.admin.v1.UpdateRole",
+          "requiresCompletion": false
+        }
+      ],
+      "multipartPrefix": "LITERAL_18",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_19"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g7",
+      "technology": "gcp-iam",
+      "skills": [
+        "identity-federation"
+      ],
+      "predicates": [
+        {
+          "id": "iam-pool-create",
+          "service": "iam.googleapis.com",
+          "method": "google.iam.v1.WorkloadIdentityPools.CreateWorkloadIdentityPool",
+          "requiresCompletion": true
+        },
+        {
+          "id": "iam-provider-create",
+          "service": "iam.googleapis.com",
+          "method": "google.iam.v1.WorkloadIdentityPools.CreateWorkloadIdentityPoolProvider",
+          "requiresCompletion": true
+        }
+      ],
+      "multipartPrefix": "LITERAL_20",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_21"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g8",
+      "technology": "gcp-secret-manager",
+      "skills": [
+        "secret-lifecycle"
+      ],
+      "predicates": [
+        {
+          "id": "secret-create",
+          "service": "secretmanager.googleapis.com",
+          "method": "google.cloud.secretmanager.v1.SecretManagerService.CreateSecret",
+          "requiresCompletion": false
+        },
+        {
+          "id": "secret-update",
+          "service": "secretmanager.googleapis.com",
+          "method": "google.cloud.secretmanager.v1.SecretManagerService.UpdateSecret",
+          "requiresCompletion": false
+        },
+        {
+          "id": "secret-version-add",
+          "service": "secretmanager.googleapis.com",
+          "method": "google.cloud.secretmanager.v1.SecretManagerService.AddSecretVersion",
+          "requiresCompletion": false
+        },
+        {
+          "id": "secret-version-disable",
+          "service": "secretmanager.googleapis.com",
+          "method": "google.cloud.secretmanager.v1.SecretManagerService.DisableSecretVersion",
+          "requiresCompletion": false
+        },
+        {
+          "id": "secret-version-enable",
+          "service": "secretmanager.googleapis.com",
+          "method": "google.cloud.secretmanager.v1.SecretManagerService.EnableSecretVersion",
+          "requiresCompletion": false
+        },
+        {
+          "id": "secret-version-destroy",
+          "service": "secretmanager.googleapis.com",
+          "method": "google.cloud.secretmanager.v1.SecretManagerService.DestroySecretVersion",
+          "requiresCompletion": false
+        },
+        {
+          "id": "secret-access-policy",
+          "service": "secretmanager.googleapis.com",
+          "method": "google.cloud.secretmanager.v1.SecretManagerService.SetIamPolicy",
+          "requiresCompletion": false
+        }
+      ],
+      "multipartPrefix": "LITERAL_22",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_23"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g9",
+      "technology": "gcp-cloud-kms",
+      "skills": [
+        "cryptographic-key-lifecycle"
+      ],
+      "predicates": [
+        {
+          "id": "kms-key-create",
+          "service": "cloudkms.googleapis.com",
+          "method": "CreateCryptoKey",
+          "requiresCompletion": false
+        },
+        {
+          "id": "kms-version-create",
+          "service": "cloudkms.googleapis.com",
+          "method": "CreateCryptoKeyVersion",
+          "requiresCompletion": false
+        },
+        {
+          "id": "kms-primary-version",
+          "service": "cloudkms.googleapis.com",
+          "method": "UpdateCryptoKeyPrimaryVersion",
+          "requiresCompletion": false
+        },
+        {
+          "id": "kms-key-update",
+          "service": "cloudkms.googleapis.com",
+          "method": "UpdateCryptoKey",
+          "requiresCompletion": false
+        }
+      ],
+      "multipartPrefix": "LITERAL_24",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_25"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g10",
+      "technology": "gcp-cloud-monitoring",
+      "skills": [
+        "monitoring-configuration"
+      ],
+      "predicates": [
+        {
+          "id": "monitoring-alert-create",
+          "service": "monitoring.googleapis.com",
+          "method": "google.monitoring.v3.AlertPolicyService.CreateAlertPolicy",
+          "requiresCompletion": false
+        },
+        {
+          "id": "monitoring-alert-update",
+          "service": "monitoring.googleapis.com",
+          "method": "google.monitoring.v3.AlertPolicyService.UpdateAlertPolicy",
+          "requiresCompletion": false
+        },
+        {
+          "id": "monitoring-uptime-create",
+          "service": "monitoring.googleapis.com",
+          "method": "google.monitoring.v3.UptimeCheckService.CreateUptimeCheckConfig",
+          "requiresCompletion": false
+        },
+        {
+          "id": "monitoring-uptime-update",
+          "service": "monitoring.googleapis.com",
+          "method": "google.monitoring.v3.UptimeCheckService.UpdateUptimeCheckConfig",
+          "requiresCompletion": false
+        },
+        {
+          "id": "monitoring-slo-create",
+          "service": "monitoring.googleapis.com",
+          "method": "google.monitoring.v3.ServiceMonitoringService.CreateServiceLevelObjective",
+          "requiresCompletion": false
+        },
+        {
+          "id": "monitoring-slo-update",
+          "service": "monitoring.googleapis.com",
+          "method": "google.monitoring.v3.ServiceMonitoringService.UpdateServiceLevelObjective",
+          "requiresCompletion": false
+        }
+      ],
+      "multipartPrefix": "LITERAL_26",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_27"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g11",
+      "technology": "gcp-cloud-monitoring",
+      "skills": [
+        "observability-dashboards"
+      ],
+      "predicates": [
+        {
+          "id": "monitoring-dashboard-create",
+          "service": "monitoring.googleapis.com",
+          "method": "google.monitoring.dashboard.v1.DashboardsService.CreateDashboard",
+          "requiresCompletion": false
+        },
+        {
+          "id": "monitoring-dashboard-update",
+          "service": "monitoring.googleapis.com",
+          "method": "google.monitoring.dashboard.v1.DashboardsService.UpdateDashboard",
+          "requiresCompletion": false
+        }
+      ],
+      "multipartPrefix": "LITERAL_28",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_29"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g12",
+      "technology": "gcp-cloud-logging",
+      "skills": [
+        "log-routing"
+      ],
+      "predicates": [
+        {
+          "id": "logging-sink-create",
+          "service": "logging.googleapis.com",
+          "method": "google.logging.v2.ConfigServiceV2.CreateSink",
+          "requiresCompletion": false
+        },
+        {
+          "id": "logging-sink-update",
+          "service": "logging.googleapis.com",
+          "method": "google.logging.v2.ConfigServiceV2.UpdateSink",
+          "requiresCompletion": false
+        }
+      ],
+      "multipartPrefix": "LITERAL_30",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_31"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g13",
+      "technology": "gcp-dataflow",
+      "skills": [
+        "data-pipeline-operations"
+      ],
+      "predicates": [
+        {
+          "id": "dataflow-job-create",
+          "service": "dataflow.googleapis.com",
+          "method": "dataflow.jobs.create",
+          "requiresCompletion": false
+        },
+        {
+          "id": "dataflow-job-cancel",
+          "service": "dataflow.googleapis.com",
+          "method": "dataflow.jobs.cancel",
+          "requiresCompletion": false
+        }
+      ],
+      "multipartPrefix": "LITERAL_32",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_33"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g14",
+      "technology": "gcp-bigquery",
+      "skills": [
+        "analytical-data-administration"
+      ],
+      "predicates": [
+        {
+          "id": "bigquery-dataset-create",
+          "service": "bigquery.googleapis.com",
+          "method": "google.cloud.bigquery.v2.DatasetService.InsertDataset",
+          "requiresCompletion": false
+        },
+        {
+          "id": "bigquery-dataset-update",
+          "service": "bigquery.googleapis.com",
+          "method": "google.cloud.bigquery.v2.DatasetService.UpdateDataset",
+          "requiresCompletion": false
+        },
+        {
+          "id": "bigquery-table-create",
+          "service": "bigquery.googleapis.com",
+          "method": "google.cloud.bigquery.v2.TableService.InsertTable",
+          "requiresCompletion": false
+        },
+        {
+          "id": "bigquery-table-update",
+          "service": "bigquery.googleapis.com",
+          "method": "google.cloud.bigquery.v2.TableService.UpdateTable",
+          "requiresCompletion": false
+        }
+      ],
+      "multipartPrefix": "LITERAL_34",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_35"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g15",
+      "technology": "gcp-cloud-storage",
+      "skills": [
+        "object-storage-administration"
+      ],
+      "predicates": [
+        {
+          "id": "storage-bucket-create",
+          "service": "storage.googleapis.com",
+          "method": "storage.buckets.create",
+          "requiresCompletion": false
+        }
+      ],
+      "multipartPrefix": "LITERAL_36",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_37"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g16",
+      "technology": "gcp-cloud-sql",
+      "skills": [
+        "database-operations"
+      ],
+      "predicates": [
+        {
+          "id": "sql-instance-create",
+          "service": "cloudsql.googleapis.com",
+          "method": "cloudsql.instances.create",
+          "requiresCompletion": true
+        },
+        {
+          "id": "sql-instance-update",
+          "service": "cloudsql.googleapis.com",
+          "method": "cloudsql.instances.update",
+          "requiresCompletion": true
+        },
+        {
+          "id": "sql-backup-create",
+          "service": "cloudsql.googleapis.com",
+          "method": "cloudsql.backups.create",
+          "requiresCompletion": true
+        },
+        {
+          "id": "sql-backup-restore",
+          "service": "cloudsql.googleapis.com",
+          "method": "cloudsql.instances.restoreBackup",
+          "requiresCompletion": true
+        }
+      ],
+      "multipartPrefix": "LITERAL_38",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_39"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g17",
+      "technology": "gcp-firestore",
+      "skills": [
+        "document-database-operations"
+      ],
+      "predicates": [
+        {
+          "id": "firestore-index-create",
+          "service": "firestore.googleapis.com",
+          "method": "google.firestore.admin.v1.FirestoreAdmin.CreateIndex",
+          "requiresCompletion": true
+        },
+        {
+          "id": "firestore-export",
+          "service": "firestore.googleapis.com",
+          "method": "google.firestore.admin.v1.FirestoreAdmin.ExportDocuments",
+          "requiresCompletion": true
+        },
+        {
+          "id": "firestore-import",
+          "service": "firestore.googleapis.com",
+          "method": "google.firestore.admin.v1.FirestoreAdmin.ImportDocuments",
+          "requiresCompletion": true
+        }
+      ],
+      "multipartPrefix": "LITERAL_40",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_41"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g18",
+      "technology": "gcp-pubsub",
+      "skills": [
+        "event-messaging-configuration"
+      ],
+      "predicates": [
+        {
+          "id": "pubsub-topic-create",
+          "service": "pubsub.googleapis.com",
+          "method": "google.pubsub.v1.Publisher.CreateTopic",
+          "requiresCompletion": false
+        },
+        {
+          "id": "pubsub-topic-update",
+          "service": "pubsub.googleapis.com",
+          "method": "google.pubsub.v1.Publisher.UpdateTopic",
+          "requiresCompletion": false
+        },
+        {
+          "id": "pubsub-subscription-create",
+          "service": "pubsub.googleapis.com",
+          "method": "google.pubsub.v1.Subscriber.CreateSubscription",
+          "requiresCompletion": false
+        },
+        {
+          "id": "pubsub-subscription-update",
+          "service": "pubsub.googleapis.com",
+          "method": "google.pubsub.v1.Subscriber.UpdateSubscription",
+          "requiresCompletion": false
+        }
+      ],
+      "multipartPrefix": "LITERAL_42",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_43"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g19",
+      "technology": "gcp-cloud-scheduler",
+      "skills": [
+        "scheduled-task-operations"
+      ],
+      "predicates": [
+        {
+          "id": "scheduler-job-create",
+          "service": "cloudscheduler.googleapis.com",
+          "method": "google.cloud.scheduler.v1.CloudScheduler.CreateJob",
+          "requiresCompletion": false
+        },
+        {
+          "id": "scheduler-job-update",
+          "service": "cloudscheduler.googleapis.com",
+          "method": "google.cloud.scheduler.v1.CloudScheduler.UpdateJob",
+          "requiresCompletion": false
+        },
+        {
+          "id": "scheduler-job-run",
+          "service": "cloudscheduler.googleapis.com",
+          "method": "google.cloud.scheduler.v1.CloudScheduler.RunJob",
+          "requiresCompletion": false
+        }
+      ],
+      "multipartPrefix": "LITERAL_44",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_45"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g20",
+      "technology": "gcp-workflows",
+      "skills": [
+        "workflow-orchestration"
+      ],
+      "predicates": [
+        {
+          "id": "workflow-create",
+          "service": "workflows.googleapis.com",
+          "method": "google.cloud.workflows.v1.Workflows.CreateWorkflow",
+          "requiresCompletion": true
+        },
+        {
+          "id": "workflow-update",
+          "service": "workflows.googleapis.com",
+          "method": "google.cloud.workflows.v1.Workflows.UpdateWorkflow",
+          "requiresCompletion": true
+        }
+      ],
+      "multipartPrefix": "LITERAL_46",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_47"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g21",
+      "technology": "gcp-artifact-registry",
+      "skills": [
+        "artifact-repository-operations"
+      ],
+      "predicates": [
+        {
+          "id": "artifact-repository-create",
+          "service": "artifactregistry.googleapis.com",
+          "method": "google.devtools.artifactregistry.v1.ArtifactRegistry.CreateRepository",
+          "requiresCompletion": true
+        },
+        {
+          "id": "artifact-repository-update",
+          "service": "artifactregistry.googleapis.com",
+          "method": "google.devtools.artifactregistry.v1.ArtifactRegistry.UpdateRepository",
+          "requiresCompletion": false
+        },
+        {
+          "id": "artifact-tag-create",
+          "service": "artifactregistry.googleapis.com",
+          "method": "google.devtools.artifactregistry.v1.ArtifactRegistry.CreateTag",
+          "requiresCompletion": false
+        },
+        {
+          "id": "artifact-tag-update",
+          "service": "artifactregistry.googleapis.com",
+          "method": "google.devtools.artifactregistry.v1.ArtifactRegistry.UpdateTag",
+          "requiresCompletion": false
+        }
+      ],
+      "multipartPrefix": "LITERAL_48",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_49"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    },
+    {
+      "id": "g22",
+      "technology": "gcp-resource-manager",
+      "skills": [
+        "project-governance"
+      ],
+      "predicates": [
+        {
+          "id": "project-iam-policy",
+          "service": "cloudresourcemanager.googleapis.com",
+          "method": "cloudresourcemanager.v1.projects.setIamPolicy",
+          "requiresCompletion": false
+        },
+        {
+          "id": "project-organization-policy",
+          "service": "cloudresourcemanager.googleapis.com",
+          "method": "cloudresourcemanager.v1.projects.setOrgPolicy",
+          "requiresCompletion": false
+        }
+      ],
+      "multipartPrefix": "LITERAL_50",
+      "jsonChunks": [
+        "LITERAL_1",
+        "LITERAL_2",
+        "LITERAL_3",
+        "LITERAL_4",
+        "LITERAL_5",
+        "LITERAL_51"
+      ],
+      "multipartSuffix": "LITERAL_7"
+    }
+  ],
+  "literals": [
+    {
+      "name": "LITERAL_0",
+      "byteLength": 205,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g0>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_1",
+      "byteLength": 28,
+      "utf8": "{\"resourceNames\":[\"projects/"
+    },
+    {
+      "name": "LITERAL_2",
+      "byteLength": 32,
+      "utf8": "\"],\"filter\":\"logName=\\\"projects/"
+    },
+    {
+      "name": "LITERAL_3",
+      "byteLength": 177,
+      "utf8": "/logs/cloudaudit.googleapis.com%2Factivity\\\" AND protoPayload.\\\"@type\\\"=\\\"type.googleapis.com/google.cloud.audit.AuditLog\\\" AND protoPayload.authenticationInfo.principalEmail=\\\""
+    },
+    {
+      "name": "LITERAL_4",
+      "byteLength": 222,
+      "utf8": "\\\" AND NOT protoPayload.authenticationInfo.serviceAccountDelegationInfo:* AND NOT protoPayload.authenticationInfo.serviceAccountKeyName:* AND (NOT protoPayload.status.code:* OR protoPayload.status.code=0) AND timestamp>=\\\""
+    },
+    {
+      "name": "LITERAL_5",
+      "byteLength": 20,
+      "utf8": "\\\" AND timestamp<=\\\""
+    },
+    {
+      "name": "LITERAL_6",
+      "byteLength": 1070,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"run.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.run.v2.Services.CreateService\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"run.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.run.v2.Services.UpdateService\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"run.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.run.v2.Jobs.CreateJob\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"run.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.run.v2.Jobs.UpdateJob\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"run.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.run.v1.Services.ReplaceService\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"run.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.run.v1.Services.CreateService\\\" AND (NOT operation:* OR operation.last=true)))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_7",
+      "byteLength": 2,
+      "utf8": "\r\n"
+    },
+    {
+      "name": "LITERAL_8",
+      "byteLength": 205,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g1>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_9",
+      "byteLength": 800,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"cloudbuild.googleapis.com\\\" AND protoPayload.methodName=\\\"google.devtools.cloudbuild.v1.CloudBuild.CreateBuild\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"cloudbuild.googleapis.com\\\" AND protoPayload.methodName=\\\"google.devtools.cloudbuild.v1.CloudBuild.CreateBuildTrigger\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"cloudbuild.googleapis.com\\\" AND protoPayload.methodName=\\\"google.devtools.cloudbuild.v1.CloudBuild.UpdateBuildTrigger\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"cloudbuild.googleapis.com\\\" AND protoPayload.methodName=\\\"google.devtools.cloudbuild.v1.CloudBuild.CancelBuild\\\" AND (NOT operation:* OR operation.last=true)))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_10",
+      "byteLength": 205,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g2>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_11",
+      "byteLength": 2068,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.instances.insert\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.instances.start\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.instances.stop\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.instances.setMachineType\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.instanceTemplates.insert\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.regionInstanceTemplates.insert\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.disks.insert\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.disks.resize\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.disks.createSnapshot\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.images.insert\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.instanceGroupManagers.insert\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.instanceGroupManagers.resize\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.autoscalers.insert\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.autoscalers.patch\\\" AND operation.last=true))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_12",
+      "byteLength": 205,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g3>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_13",
+      "byteLength": 1742,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.networks.insert\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.networks.patch\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.subnetworks.insert\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.subnetworks.patch\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.firewalls.insert\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.firewalls.patch\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.firewalls.update\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.routes.insert\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.routers.insert\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.routers.patch\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.backendServices.insert\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"compute.googleapis.com\\\" AND protoPayload.methodName=\\\"v1.compute.forwardingRules.insert\\\" AND operation.last=true))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_14",
+      "byteLength": 205,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g4>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_15",
+      "byteLength": 350,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"dns.googleapis.com\\\" AND protoPayload.methodName=\\\"dns.managedZones.create\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"dns.googleapis.com\\\" AND protoPayload.methodName=\\\"dns.changes.create\\\" AND (NOT operation:* OR operation.last=true)))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_16",
+      "byteLength": 205,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g5>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_17",
+      "byteLength": 1046,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"container.googleapis.com\\\" AND protoPayload.methodName=\\\"google.container.v1.ClusterManager.CreateCluster\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"container.googleapis.com\\\" AND protoPayload.methodName=\\\"google.container.v1.ClusterManager.UpdateCluster\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"container.googleapis.com\\\" AND protoPayload.methodName=\\\"google.container.v1.ClusterManager.CreateNodePool\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"container.googleapis.com\\\" AND protoPayload.methodName=\\\"google.container.v1.ClusterManager.SetNodePoolSize\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"container.googleapis.com\\\" AND protoPayload.methodName=\\\"google.container.v1.ClusterManager.SetNodePoolAutoscaling\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"container.googleapis.com\\\" AND protoPayload.methodName=\\\"google.container.v1.ClusterManager.SetNetworkPolicy\\\" AND operation.last=true))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_18",
+      "byteLength": 205,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g6>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_19",
+      "byteLength": 1402,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"iam.googleapis.com\\\" AND protoPayload.methodName=\\\"google.iam.admin.v1.CreateServiceAccount\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"iam.googleapis.com\\\" AND protoPayload.methodName=\\\"google.iam.admin.v1.PatchServiceAccount\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"iam.googleapis.com\\\" AND protoPayload.methodName=\\\"google.iam.admin.v1.DisableServiceAccount\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"iam.googleapis.com\\\" AND protoPayload.methodName=\\\"google.iam.admin.v1.DeleteServiceAccount\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"iam.googleapis.com\\\" AND protoPayload.methodName=\\\"google.iam.admin.v1.DisableServiceAccountKey\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"iam.googleapis.com\\\" AND protoPayload.methodName=\\\"google.iam.admin.v1.DeleteServiceAccountKey\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"iam.googleapis.com\\\" AND protoPayload.methodName=\\\"google.iam.admin.v1.CreateRole\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"iam.googleapis.com\\\" AND protoPayload.methodName=\\\"google.iam.admin.v1.UpdateRole\\\" AND (NOT operation:* OR operation.last=true)))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_20",
+      "byteLength": 205,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g7>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_21",
+      "byteLength": 399,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"iam.googleapis.com\\\" AND protoPayload.methodName=\\\"google.iam.v1.WorkloadIdentityPools.CreateWorkloadIdentityPool\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"iam.googleapis.com\\\" AND protoPayload.methodName=\\\"google.iam.v1.WorkloadIdentityPools.CreateWorkloadIdentityPoolProvider\\\" AND operation.last=true))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_22",
+      "byteLength": 205,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g8>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_23",
+      "byteLength": 1502,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"secretmanager.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.secretmanager.v1.SecretManagerService.CreateSecret\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"secretmanager.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.secretmanager.v1.SecretManagerService.UpdateSecret\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"secretmanager.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.secretmanager.v1.SecretManagerService.AddSecretVersion\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"secretmanager.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.secretmanager.v1.SecretManagerService.DisableSecretVersion\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"secretmanager.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.secretmanager.v1.SecretManagerService.EnableSecretVersion\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"secretmanager.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.secretmanager.v1.SecretManagerService.DestroySecretVersion\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"secretmanager.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.secretmanager.v1.SecretManagerService.SetIamPolicy\\\" AND (NOT operation:* OR operation.last=true)))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_24",
+      "byteLength": 205,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g9>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_25",
+      "byteLength": 672,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"cloudkms.googleapis.com\\\" AND protoPayload.methodName=\\\"CreateCryptoKey\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"cloudkms.googleapis.com\\\" AND protoPayload.methodName=\\\"CreateCryptoKeyVersion\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"cloudkms.googleapis.com\\\" AND protoPayload.methodName=\\\"UpdateCryptoKeyPrimaryVersion\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"cloudkms.googleapis.com\\\" AND protoPayload.methodName=\\\"UpdateCryptoKey\\\" AND (NOT operation:* OR operation.last=true)))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_26",
+      "byteLength": 206,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g10>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_27",
+      "byteLength": 1261,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"monitoring.googleapis.com\\\" AND protoPayload.methodName=\\\"google.monitoring.v3.AlertPolicyService.CreateAlertPolicy\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"monitoring.googleapis.com\\\" AND protoPayload.methodName=\\\"google.monitoring.v3.AlertPolicyService.UpdateAlertPolicy\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"monitoring.googleapis.com\\\" AND protoPayload.methodName=\\\"google.monitoring.v3.UptimeCheckService.CreateUptimeCheckConfig\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"monitoring.googleapis.com\\\" AND protoPayload.methodName=\\\"google.monitoring.v3.UptimeCheckService.UpdateUptimeCheckConfig\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"monitoring.googleapis.com\\\" AND protoPayload.methodName=\\\"google.monitoring.v3.ServiceMonitoringService.CreateServiceLevelObjective\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"monitoring.googleapis.com\\\" AND protoPayload.methodName=\\\"google.monitoring.v3.ServiceMonitoringService.UpdateServiceLevelObjective\\\" AND (NOT operation:* OR operation.last=true)))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_28",
+      "byteLength": 206,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g11>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_29",
+      "byteLength": 451,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"monitoring.googleapis.com\\\" AND protoPayload.methodName=\\\"google.monitoring.dashboard.v1.DashboardsService.CreateDashboard\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"monitoring.googleapis.com\\\" AND protoPayload.methodName=\\\"google.monitoring.dashboard.v1.DashboardsService.UpdateDashboard\\\" AND (NOT operation:* OR operation.last=true)))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_30",
+      "byteLength": 206,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g12>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_31",
+      "byteLength": 405,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"logging.googleapis.com\\\" AND protoPayload.methodName=\\\"google.logging.v2.ConfigServiceV2.CreateSink\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"logging.googleapis.com\\\" AND protoPayload.methodName=\\\"google.logging.v2.ConfigServiceV2.UpdateSink\\\" AND (NOT operation:* OR operation.last=true)))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_32",
+      "byteLength": 206,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g13>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_33",
+      "byteLength": 359,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"dataflow.googleapis.com\\\" AND protoPayload.methodName=\\\"dataflow.jobs.create\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"dataflow.googleapis.com\\\" AND protoPayload.methodName=\\\"dataflow.jobs.cancel\\\" AND (NOT operation:* OR operation.last=true)))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_34",
+      "byteLength": 206,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g14>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_35",
+      "byteLength": 795,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"bigquery.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.bigquery.v2.DatasetService.InsertDataset\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"bigquery.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.bigquery.v2.DatasetService.UpdateDataset\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"bigquery.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.bigquery.v2.TableService.InsertTable\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"bigquery.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.bigquery.v2.TableService.UpdateTable\\\" AND (NOT operation:* OR operation.last=true)))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_36",
+      "byteLength": 206,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g15>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_37",
+      "byteLength": 204,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"storage.googleapis.com\\\" AND protoPayload.methodName=\\\"storage.buckets.create\\\" AND (NOT operation:* OR operation.last=true)))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_38",
+      "byteLength": 206,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g16>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_39",
+      "byteLength": 612,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"cloudsql.googleapis.com\\\" AND protoPayload.methodName=\\\"cloudsql.instances.create\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"cloudsql.googleapis.com\\\" AND protoPayload.methodName=\\\"cloudsql.instances.update\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"cloudsql.googleapis.com\\\" AND protoPayload.methodName=\\\"cloudsql.backups.create\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"cloudsql.googleapis.com\\\" AND protoPayload.methodName=\\\"cloudsql.instances.restoreBackup\\\" AND operation.last=true))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_40",
+      "byteLength": 206,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g17>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_41",
+      "byteLength": 559,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"firestore.googleapis.com\\\" AND protoPayload.methodName=\\\"google.firestore.admin.v1.FirestoreAdmin.CreateIndex\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"firestore.googleapis.com\\\" AND protoPayload.methodName=\\\"google.firestore.admin.v1.FirestoreAdmin.ExportDocuments\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"firestore.googleapis.com\\\" AND protoPayload.methodName=\\\"google.firestore.admin.v1.FirestoreAdmin.ImportDocuments\\\" AND operation.last=true))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_42",
+      "byteLength": 206,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g18>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_43",
+      "byteLength": 751,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"pubsub.googleapis.com\\\" AND protoPayload.methodName=\\\"google.pubsub.v1.Publisher.CreateTopic\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"pubsub.googleapis.com\\\" AND protoPayload.methodName=\\\"google.pubsub.v1.Publisher.UpdateTopic\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"pubsub.googleapis.com\\\" AND protoPayload.methodName=\\\"google.pubsub.v1.Subscriber.CreateSubscription\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"pubsub.googleapis.com\\\" AND protoPayload.methodName=\\\"google.pubsub.v1.Subscriber.UpdateSubscription\\\" AND (NOT operation:* OR operation.last=true)))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_44",
+      "byteLength": 206,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g19>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_45",
+      "byteLength": 620,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"cloudscheduler.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.scheduler.v1.CloudScheduler.CreateJob\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"cloudscheduler.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.scheduler.v1.CloudScheduler.UpdateJob\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"cloudscheduler.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.scheduler.v1.CloudScheduler.RunJob\\\" AND (NOT operation:* OR operation.last=true)))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_46",
+      "byteLength": 206,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g20>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_47",
+      "byteLength": 379,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"workflows.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.workflows.v1.Workflows.CreateWorkflow\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"workflows.googleapis.com\\\" AND protoPayload.methodName=\\\"google.cloud.workflows.v1.Workflows.UpdateWorkflow\\\" AND operation.last=true))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_48",
+      "byteLength": 206,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g21>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_49",
+      "byteLength": 864,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"artifactregistry.googleapis.com\\\" AND protoPayload.methodName=\\\"google.devtools.artifactregistry.v1.ArtifactRegistry.CreateRepository\\\" AND operation.last=true) OR (protoPayload.serviceName=\\\"artifactregistry.googleapis.com\\\" AND protoPayload.methodName=\\\"google.devtools.artifactregistry.v1.ArtifactRegistry.UpdateRepository\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"artifactregistry.googleapis.com\\\" AND protoPayload.methodName=\\\"google.devtools.artifactregistry.v1.ArtifactRegistry.CreateTag\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"artifactregistry.googleapis.com\\\" AND protoPayload.methodName=\\\"google.devtools.artifactregistry.v1.ArtifactRegistry.UpdateTag\\\" AND (NOT operation:* OR operation.last=true)))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_50",
+      "byteLength": 206,
+      "utf8": "--gcp_groups_v1\r\nContent-Type: application/http\r\nContent-ID: <g22>\r\n\r\nPOST /v2/entries:list?fields=entries(timestamp)&prettyPrint=false HTTP/1.1\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n"
+    },
+    {
+      "name": "LITERAL_51",
+      "byteLength": 433,
+      "utf8": "\\\" AND ((protoPayload.serviceName=\\\"cloudresourcemanager.googleapis.com\\\" AND protoPayload.methodName=\\\"cloudresourcemanager.v1.projects.setIamPolicy\\\" AND (NOT operation:* OR operation.last=true)) OR (protoPayload.serviceName=\\\"cloudresourcemanager.googleapis.com\\\" AND protoPayload.methodName=\\\"cloudresourcemanager.v1.projects.setOrgPolicy\\\" AND (NOT operation:* OR operation.last=true)))\",\"orderBy\":\"timestamp desc\",\"pageSize\":1}"
+    },
+    {
+      "name": "LITERAL_52",
+      "byteLength": 19,
+      "utf8": "--gcp_groups_v1--\r\n"
+    }
+  ]
+}
