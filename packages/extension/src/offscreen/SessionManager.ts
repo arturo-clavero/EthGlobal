@@ -32,8 +32,10 @@ import { validateProvePermission, validateOpenWindowPermission } from './permiss
 import { sanitizePageProgress } from '../constants/pageProgress';
 import { allowedNavigation } from '../constants/pluginNavigate';
 import { proveSessionData } from './pluginHash';
-import { GcpPrivateWitnessRun, clearGcpOpenings } from './gcpPrivateWitness';
+import { GcpPrivateWitnessRun, PrivateWitnessRun, clearGcpOpenings } from './gcpPrivateWitness';
 import type { GcpPrivateProofModule } from './gcpPrivateWitness';
+import { AwsPrivateWitnessRun } from './awsPrivateWitness';
+import type { AwsCapture } from '../aws-private/browser-client.mjs';
 import type { RevealOutput } from 'tlsn-wasm';
 
 /** Maximum number of preview characters shown per reveal range. */
@@ -158,7 +160,7 @@ export class SessionManager {
     pluginConfig: PluginConfig | null,
     requestId: string | null,
     execSessionData: Record<string, string> | null,
-    privateRun?: GcpPrivateWitnessRun,
+    privateRun?: PrivateWitnessRun,
   ): Host {
     const proveManager = this.proveManager;
     let hostRef: Host | null = null;
@@ -453,6 +455,7 @@ export class SessionManager {
           width: options?.width,
           height: options?.height,
           showOverlay: options?.showOverlay,
+          ...(privateRun instanceof AwsPrivateWitnessRun ? { awsPrivateRequestId: requestId } : {}),
         })) as OpenWindowResponse;
 
         if (response?.type === 'WINDOW_OPENED' && response.payload?.windowId) {
@@ -525,7 +528,7 @@ export class SessionManager {
     requestId?: string,
     sessionData?: Record<string, string>,
     // Supplied only by a compiled offscreen caller after prepareBuiltInRun(), never a message field.
-    privateProof?: GcpPrivateProofModule,
+    privateProof?: GcpPrivateProofModule | PrivateWitnessRun,
   ): Promise<unknown> {
     const chromeRuntime = SessionManager.getChromeRuntime();
     if (!chromeRuntime.onMessage) {
@@ -539,10 +542,17 @@ export class SessionManager {
     if (!privateProof) logger.debug('[SessionManager] Extracted plugin config:', pluginConfig);
 
     // Create a per-execution Host with callbacks that close over this execution's state
-    const privateRun = privateProof ? new GcpPrivateWitnessRun(sessionData || {}, execRequestId, privateProof) : undefined;
+    const privateRun = privateProof instanceof PrivateWitnessRun ? privateProof :
+      privateProof ? new GcpPrivateWitnessRun(sessionData || {}, execRequestId, privateProof) : undefined;
     const host = this.createExecutionHost(pluginConfig, execRequestId, sessionData || null, privateRun);
     this.addPageProgress(host, execRequestId, sessionData || null);
     this.addNavigate(host, execRequestId, sessionData || null);
+    if (privateRun instanceof AwsPrivateWitnessRun) host.addCapability('collectAwsPrivate', (captureId: unknown) => {
+      const windowId = this.runWindows.get(host);
+      if (!windowId || typeof captureId !== 'string' || !/^[A-Za-z0-9._-]{1,256}$/.test(captureId)) throw new Error('AWS_PRIVATE_COLLECTION_FAILED');
+      return privateRun.collect(async () => await chromeRuntime.sendMessage({ type: 'AWS_PRIVATE_CREDENTIALS',
+        requestId: execRequestId, windowId, captureId }) as AwsCapture);
+    });
 
     // Wrap the plugin's event listener so it does NOT return a Promise to
     // Chrome's messaging API. The plugin listener (makeOpenWindow's onMessage)

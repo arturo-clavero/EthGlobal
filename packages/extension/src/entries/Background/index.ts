@@ -9,7 +9,9 @@ import { autoApprovalFor, offscreenSessionData } from '../../background/autoAppr
 import { logger } from '@tlsn/common';
 import { getStoredLogLevel } from '../../utils/logLevelStorage';
 import type { BackgroundMessage } from '../../types/messages';
-import { GCP_PRIVATE_ROUTE_TTL_MS, liveGcpPrivateRoute, takeGcpPrivateCompletion } from '../../background/gcpPrivateCompletion';
+import { GCP_PRIVATE_ROUTE_TTL_MS, AWS_PRIVATE_ROUTE_TTL_MS, livePrivateRoute, takePrivateCompletion } from '../../background/gcpPrivateCompletion';
+import type { GcpPrivateRoute } from '../../background/gcpPrivateCompletion';
+import { readAwsPrivateCapture } from '../../background/awsPrivateCapture';
 import { waitForOffscreenReady } from '../../background/offscreenReady';
 
 const chrome = (global as typeof globalThis).chrome;
@@ -28,7 +30,7 @@ const windowManager = new WindowManager();
 const PROGRESS_ROUTE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 // `pageProgress` marks a route whose run was
 // auto-approved (a trusted plugin on an allowed origin); only those get PLUGIN_PROGRESS.
-const progressRoutes: Map<string, { tabId: number; createdAt: number; pageProgress?: boolean; gcpPrivate?: boolean }> =
+const progressRoutes: Map<string, GcpPrivateRoute> =
   new Map();
 
 // Handle extension install/update
@@ -121,11 +123,17 @@ browser.tabs.onUpdated.addListener(async (tabId, changeInfo, _tab) => {
 browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.MessageSender) => {
   const privateMessage = msg as { type?: string; requestId?: unknown };
   const privateDeps = { extensionId: browser.runtime.id, offscreenUrl: browser.runtime.getURL('offscreen.html'), now: Date.now() };
-  if (privateMessage?.type === 'GCP_PRIVATE_HEARTBEAT') {
-    return Promise.resolve({ ok: !!liveGcpPrivateRoute(privateMessage.requestId, sender, progressRoutes, privateDeps) });
+  if (privateMessage?.type === 'AWS_PRIVATE_CREDENTIALS') {
+    return readAwsPrivateCapture(msg, sender, progressRoutes, { ...privateDeps, now: Date.now,
+      window: id => windowManager.getWindow(id), tab: id => browser.tabs.get(id),
+      send: (id, message) => browser.tabs.sendMessage(id, message, { frameId: 0 }),
+    });
   }
-  if (privateMessage?.type === 'GCP_PRIVATE_COMPLETE') {
-    const completion = takeGcpPrivateCompletion(msg, sender, progressRoutes, privateDeps);
+  if (privateMessage?.type === 'GCP_PRIVATE_HEARTBEAT' || privateMessage?.type === 'AWS_PRIVATE_HEARTBEAT') {
+    return Promise.resolve({ ok: !!livePrivateRoute(privateMessage.requestId, sender, progressRoutes, privateDeps, privateMessage.type === 'AWS_PRIVATE_HEARTBEAT' ? 'aws' : 'gcp') });
+  }
+  if (privateMessage?.type === 'GCP_PRIVATE_COMPLETE' || privateMessage?.type === 'AWS_PRIVATE_COMPLETE') {
+    const completion = takePrivateCompletion(msg, sender, progressRoutes, privateDeps, privateMessage.type === 'AWS_PRIVATE_COMPLETE' ? 'aws' : 'gcp');
     if (!completion) return Promise.resolve({ ok: false });
     return browser.tabs.sendMessage(completion.tabId, { type: 'RUN_BUILTIN_COMPLETE',
       requestId: completion.requestId, ...completion.response }).then(() => ({ ok: true })).catch(() => ({ ok: false }));
@@ -207,7 +215,7 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
 
   if (request.type === 'PLUGIN_PROGRESS') {
     const route = progressRoutes.get(request.requestId);
-    if (route?.gcpPrivate && !liveGcpPrivateRoute(request.requestId, sender, progressRoutes, privateDeps)) return;
+    if ((route?.gcpPrivate || route?.awsPrivate) && !livePrivateRoute(request.requestId, sender, progressRoutes, privateDeps, route.awsPrivate ? 'aws' : 'gcp')) return;
     if (route?.pageProgress) {
       browser.tabs
         .sendMessage(route.tabId, {
@@ -260,10 +268,15 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
     logger.info(`Built-in plugin ${approval.plugin.id} on ${approval.origin}`);
     const requestId = approval.requestId;
     const privateGcp = approval.plugin.id === 'gcp-work';
-    if ((privateGcp && (!requestId || sender.tab?.id === undefined || progressRoutes.has(requestId))) ||
-        (requestId && progressRoutes.get(requestId)?.gcpPrivate)) {
-      try { console.debug('GCP_PRIVATE_ROUTE_REFUSED'); } catch { /* Keep the original refusal. */ }
-      return Promise.resolve({ success: false, error: 'GCP_PRIVATE_PROVING_FAILED' });
+    const privateAws = approval.plugin.id === 'aws-private-work';
+    const privateRun = privateGcp || privateAws;
+    const privateError = privateAws ? 'AWS_PRIVATE_PROVING_FAILED' : 'GCP_PRIVATE_PROVING_FAILED';
+    if ((privateRun && (!requestId || sender.tab?.id === undefined || progressRoutes.has(requestId))) ||
+        (requestId && (progressRoutes.get(requestId)?.gcpPrivate || progressRoutes.get(requestId)?.awsPrivate))) {
+      if (privateGcp) {
+        try { console.debug('GCP_PRIVATE_ROUTE_REFUSED'); } catch { /* Keep the original refusal. */ }
+      }
+      return Promise.resolve({ success: false, error: privateError });
     }
     // The run's tab gets its progress; `pageProgress` marks the run as
     // auto-approved (PLUGIN_PROGRESS forwarding and PLUGIN_NAVIGATE read it).
@@ -272,7 +285,7 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
         tabId: sender.tab.id,
         createdAt: Date.now(),
         pageProgress: true,
-        ...(privateGcp ? { gcpPrivate: true } : {}),
+        ...(privateGcp ? { gcpPrivate: true } : privateAws ? { awsPrivate: true } : {}),
       });
     }
 
@@ -295,17 +308,17 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
           // The page's checked keys first, then ours (so a page cannot set them).
           sessionData: offscreenSessionData(approval),
         });
-        pendingPrivate = privateGcp && response?.success === true && response?.pending === true;
-        if (!privateGcp) logger.debug('RUN_BUILTIN_OFFSCREEN response:', response);
+        pendingPrivate = privateRun && response?.success === true && response?.pending === true;
+        if (!privateRun) logger.debug('RUN_BUILTIN_OFFSCREEN response:', response);
         return response;
       } catch (error) {
         if (privateGcp) {
           try { console.debug(`GCP_PRIVATE_START_FAILED_${stage}`); } catch { /* Preserve failure and route cleanup. */ }
         }
-        if (!privateGcp) logger.error('Error running built-in plugin:', error);
+        if (!privateRun) logger.error('Error running built-in plugin:', error);
         return {
           success: false,
-          error: privateGcp ? 'GCP_PRIVATE_PROVING_FAILED' : error instanceof Error ? error.message : 'Code execution failed',
+          error: privateRun ? privateError : error instanceof Error ? error.message : 'Code execution failed',
         };
       } finally {
         if (requestId && !pendingPrivate) progressRoutes.delete(requestId);
@@ -354,6 +367,12 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
 
   // Handle OPEN_WINDOW requests from content scripts
   if (request.type === 'OPEN_WINDOW') {
+    const awsRequestId = (msg as { awsPrivateRequestId?: unknown }).awsPrivateRequestId;
+    const awsRoute = awsRequestId === undefined ? null : livePrivateRoute(awsRequestId, sender, progressRoutes, privateDeps, 'aws');
+    if (awsRequestId !== undefined && (!awsRoute || awsRoute.windowId !== undefined ||
+        request.url !== 'https://ap-southeast-2.console.aws.amazon.com/cloudtrailv2/home?region=ap-southeast-2#/events')) {
+      return Promise.resolve({ type: 'WINDOW_ERROR', payload: { error: 'AWS_PRIVATE_COLLECTION_FAILED' } });
+    }
 
     // Validate URL using comprehensive validator
     const urlValidation = validateUrl(request.url);
@@ -415,6 +434,11 @@ browser.runtime.onMessage.addListener((msg: unknown, sender: browser.Runtime.Mes
         logger.info(`Window created: ${windowId}, Tab: ${tabId}`);
 
         try {
+          if (awsRoute) {
+            if (livePrivateRoute(awsRequestId, sender, progressRoutes, { ...privateDeps, now: Date.now() }, 'aws') !== awsRoute ||
+                awsRoute.windowId !== undefined) throw new Error('AWS_PRIVATE_COLLECTION_FAILED');
+            awsRoute.windowId = windowId;
+          }
           // Register window with WindowManager
           const managedWindow = await windowManager.registerWindow({
             id: windowId,
@@ -535,7 +559,7 @@ setInterval(() => {
   // Evict stale progress routes (TTL-based)
   const now = Date.now();
   for (const [requestId, route] of progressRoutes) {
-    if (now - route.createdAt >= (route.gcpPrivate ? GCP_PRIVATE_ROUTE_TTL_MS : PROGRESS_ROUTE_TTL_MS)) {
+    if (now - route.createdAt >= (route.awsPrivate ? AWS_PRIVATE_ROUTE_TTL_MS : route.gcpPrivate ? GCP_PRIVATE_ROUTE_TTL_MS : PROGRESS_ROUTE_TTL_MS)) {
       logger.debug('Evicting stale progress route:', requestId);
       progressRoutes.delete(requestId);
     }

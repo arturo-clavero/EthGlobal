@@ -164,6 +164,7 @@ const reportProgress = env.reportProgress;
 // Auto-approved plugins only; sends the run's own
 // window to GitHub's logout/login/account switcher (exact URLs). Undefined elsewhere.
 const navigate = env.navigate;
+const collectAwsPrivate = env.collectAwsPrivate;
 ${processedCode};
 `;
 

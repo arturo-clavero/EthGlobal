@@ -24,16 +24,29 @@ export interface GcpPrivateWitness extends GcpPrivateSession {
 export type { GcpPrivateCircuitId, GcpPrivateProof } from './gcpPrivateResult';
 
 /** Extension-compiled code only. Never populate this capability from a runtime message. */
-export interface GcpPrivateProofModule {
+export interface PrivateProofModule {
   /** Drop local project/identity state and terminate any active proof worker. */
   clear?(): void;
   /** Copies are erased when this callback settles. The module owns parsing/policy semantics. */
   getRevealPlan?(session: Readonly<GcpPrivateSession>, transcripts: { sent: Uint8Array; recv: Uint8Array }):
     GcpPrivateRevealPlan | Promise<GcpPrivateRevealPlan>;
+  /** The adapter MUST terminate its proving worker on abort; a Promise timeout cannot stop CPU work. */
+  prove(witnesses: readonly GcpPrivateWitness[], signal: AbortSignal): Promise<unknown>;
+}
+export interface GcpPrivateProofModule extends PrivateProofModule {
   /** Local query construction only; the final circuit must authenticate this account again. */
   identityEmail(witness: Readonly<GcpPrivateWitness>): string;
-  /** The adapter MUST terminate its proving worker on abort; a Promise timeout cannot stop CPU work. */
   prove(witnesses: readonly GcpPrivateWitness[], signal: AbortSignal): Promise<{ proofs: GcpPrivateProof[] }>;
+}
+interface PrivateWitnessPolicy {
+  method: 'GCP_WORK' | 'AWS_ACCOUNT';
+  steps: readonly { step: string; host: string }[];
+  nonceMac?: string;
+  proveTimeoutMs: number;
+  identityResult?(witness: Readonly<GcpPrivateWitness>): Record<string, string>;
+  /** GCP-only observability. The shared owner emits nothing when a policy omits it. */
+  diagnostic?(code: AcceptDiagnostic): void;
+  finish(result: unknown, sessionIds: string[]): unknown;
 }
 
 const STEPS = ['identity', 'groups:0', 'groups:1', 'groups:2', 'groups:3', 'groups:4'];
@@ -45,7 +58,8 @@ const PARTS = ['START_LINE', 'PROTOCOL', 'METHOD', 'REQUEST_TARGET', 'STATUS_COD
 const PROVE_TIMEOUT_MS = 11 * 60 * 1000;
 type AcceptStage = 'PRECONDITION' | 'OPENINGS' | 'RESULT_SHAPE' | 'REVEAL_MATCH' |
   'OPENING_LOOKUP' | 'COMMITMENT_MATCH' | 'IDENTITY';
-export function gcpPrivateDiagnostic(code: 'ACCEPT_ENTERED' | 'ACCEPTED' | `ACCEPT_FAILED_${AcceptStage}` |
+export type AcceptDiagnostic = 'ACCEPT_ENTERED' | 'ACCEPTED' | `ACCEPT_FAILED_${AcceptStage}`;
+export function gcpPrivateDiagnostic(code: AcceptDiagnostic |
   'EXECUTE_FAILED' | 'HEARTBEAT_NOT_OK' | 'HEARTBEAT_REJECTED' | 'RUN_BUSY' | 'RUN_ID_MISSING' | 'MODULE_FAILED'): void {
   try { console.debug(`GCP_PRIVATE_${code}`); } catch { /* Diagnostics must not affect cleanup or the original error. */ }
 }
@@ -98,7 +112,7 @@ function derive(plan: GcpPrivateRevealPlan, sent: Uint8Array, recv: Uint8Array):
 }
 
 /** No getter, serialization, storage, or message handler exposes this execution's witness. */
-export class GcpPrivateWitnessRun {
+export class PrivateWitnessRun {
   private readonly witnesses: GcpPrivateWitness[] = [];
   private nonceMac: string | undefined;
   private activeHost: string | undefined;
@@ -109,17 +123,18 @@ export class GcpPrivateWitnessRun {
   private proving: AbortController | undefined;
 
   constructor(private readonly run: Record<string, string>, requestId: string | null,
-    private readonly module: GcpPrivateProofModule) {
-    if (run._autoApproved !== '1' || run.method !== 'GCP_WORK' || run.mode !== 'Proxy' ||
+    private readonly module: PrivateProofModule, private readonly policy: PrivateWitnessPolicy) {
+    if (run._autoApproved !== '1' || run.method !== policy.method || run.mode !== 'Proxy' ||
         !HEX.test(run.pluginSha256 ?? '') || !UUID.test(run.proofId ?? '') || requestId !== run.proofId) fail();
     this.run = { ...run };
+    this.nonceMac = policy.nonceMac;
   }
   begin(session: Record<string, string>, serverName: string, relay: boolean): void {
-    const expected = STEPS[this.witnesses.length];
+    const expected = this.policy.steps[this.witnesses.length];
     if (this.closed || this.activeHost || !expected || relay || session.mode !== 'Proxy' ||
-        session.proofId !== this.run.proofId || session.method !== 'GCP_WORK' ||
-        session.pluginSha256 !== this.run.pluginSha256 || session.step !== expected ||
-        serverName !== (expected === 'identity' ? 'accounts.google.com' : 'logging.clients6.google.com') ||
+        session.proofId !== this.run.proofId || session.method !== this.policy.method ||
+        session.pluginSha256 !== this.run.pluginSha256 || session.step !== expected.step ||
+        serverName !== expected.host ||
         !/^[A-Za-z0-9_-]{43}$/.test(session.nonceMac ?? '') ||
         (this.nonceMac !== undefined && session.nonceMac !== this.nonceMac)) fail();
     this.nonceMac = session.nonceMac;
@@ -128,7 +143,7 @@ export class GcpPrivateWitnessRun {
   async selectRanges(sessionId: string | null, serverName: string, sent: Uint8Array, recv: Uint8Array,
     fallback: () => ComputedRanges | Promise<ComputedRanges>): Promise<ComputedRanges> {
     if (this.closed || this.selection || this.activeSessionId || !sessionId || !UUID.test(sessionId) ||
-        this.activeHost !== serverName || this.witnesses.some(w => w.sessionId === sessionId) ||
+        this.activeHost !== serverName || this.witnesses.some(w => w.sessionId.toLowerCase() === sessionId.toLowerCase()) ||
         !sent.length || !recv.length || sent.length > 16384 || recv.length > 16384) fail();
     this.activeSessionId = sessionId;
     let ranges: ComputedRanges;
@@ -137,7 +152,7 @@ export class GcpPrivateWitnessRun {
       this.planning = copies;
       try {
         const plan = await this.module.getRevealPlan(Object.freeze({ sessionId, serverName,
-          step: STEPS[this.witnesses.length], proofId: this.run.proofId, nonceMac: this.nonceMac! }), copies);
+          step: this.policy.steps[this.witnesses.length].step, proofId: this.run.proofId, nonceMac: this.nonceMac! }), copies);
         if (this.closed) fail();
         ranges = derive(plan, sent, recv);
       } finally {
@@ -165,14 +180,14 @@ export class GcpPrivateWitnessRun {
   async accept(sessionId: string | null, serverName: string, sent: Uint8Array, recv: Uint8Array,
     openings: RevealOutput, response: { results: unknown[] } | null) {
     let stage: AcceptStage = 'PRECONDITION';
-    gcpPrivateDiagnostic('ACCEPT_ENTERED');
+    this.policy.diagnostic?.('ACCEPT_ENTERED');
     try {
       const selection = this.selection;
       if (this.closed || !selection || this.activeHost !== serverName || !sessionId || !UUID.test(sessionId) ||
           (this.activeSessionId !== undefined && this.activeSessionId !== sessionId) ||
-          this.witnesses.some(w => w.sessionId === sessionId) || !Array.isArray(response?.results) ||
+          this.witnesses.some(w => w.sessionId.toLowerCase() === sessionId.toLowerCase()) || !Array.isArray(response?.results) ||
           response.results.length !== selection.sentRangesWithHandlers.length + selection.recvRangesWithHandlers.length) fail();
-      const witness: GcpPrivateWitness = Object.freeze({ sessionId, serverName, step: STEPS[this.witnesses.length],
+      const witness: GcpPrivateWitness = Object.freeze({ sessionId, serverName, step: this.policy.steps[this.witnesses.length].step,
         proofId: this.run.proofId, nonceMac: this.nonceMac!, sent: sent.slice(), recv: recv.slice(),
         selections: { sent: selection.sentRangesWithHandlers, recv: selection.recvRangesWithHandlers },
         openings: { sent: [] as Opening[], recv: [] as Opening[] } });
@@ -233,20 +248,18 @@ export class GcpPrivateWitnessRun {
         held.sort((a, b) => a.start - b.start);
       }
       this.activeHost = undefined; this.activeSessionId = undefined; this.selection = undefined;
-      if (witness.step !== 'identity') { gcpPrivateDiagnostic('ACCEPTED'); return { results }; }
+      if (witness.step !== 'identity') { this.policy.diagnostic?.('ACCEPTED'); return { results }; }
       stage = 'IDENTITY';
-      const email = this.module.identityEmail(witness);
-      if (typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
-          email.toLowerCase().endsWith('.gserviceaccount.com')) fail();
-      gcpPrivateDiagnostic('ACCEPTED');
-      return { results, privateAccountEmail: email };
+      const identity = this.policy.identityResult?.(witness) ?? {};
+      this.policy.diagnostic?.('ACCEPTED');
+      return { results, ...identity };
     } catch (error) {
-      gcpPrivateDiagnostic(`ACCEPT_FAILED_${stage}`);
+      this.policy.diagnostic?.(`ACCEPT_FAILED_${stage}`);
       throw error;
     }
   }
   async finish() {
-    if (this.closed || this.activeHost || this.witnesses.length !== STEPS.length) fail();
+    if (this.closed || this.activeHost || this.witnesses.length !== this.policy.steps.length) fail();
     this.closed = true;
     const controller = new AbortController();
     this.proving = controller;
@@ -255,16 +268,12 @@ export class GcpPrivateWitnessRun {
       onAbort = () => reject(new Error('GCP_PRIVATE_PROOF_INVALID'));
       controller.signal.addEventListener('abort', onAbort, { once: true });
     });
-    const timer = setTimeout(() => controller.abort(), PROVE_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), this.policy.proveTimeoutMs);
     const sessionIds = this.witnesses.map(w => w.sessionId);
     try {
       const result = await Promise.race([this.module.prove(this.witnesses, controller.signal), cancelled]);
       if (controller.signal.aborted) fail();
-      const envelope = { kind: 'GCP_PRIVATE_RESULT' as const, version: 1 as const, proofs: proofBundle(result),
-        sessionIds };
-      // All accepted strings and generated keys are ASCII, so JSON length equals UTF-8 bytes.
-      if (JSON.stringify(envelope).length > 4 * 1024 * 1024) fail();
-      return sanitizeGcpPrivateResult(envelope);
+      return this.policy.finish(result, sessionIds);
     } finally {
       clearTimeout(timer); controller.signal.removeEventListener('abort', onAbort); this.clear();
     }
@@ -284,5 +293,24 @@ export class GcpPrivateWitnessRun {
     this.witnesses.length = 0;
     try { this.module.clear?.(); } catch { /* Cleanup must never expose module errors. */ }
     this.nonceMac = undefined; this.activeHost = undefined; this.activeSessionId = undefined; this.selection = undefined;
+  }
+}
+
+/** Keep GCP's six-step policy independent of the shared byte ownership machinery. */
+export class GcpPrivateWitnessRun extends PrivateWitnessRun {
+  constructor(run: Record<string, string>, requestId: string | null, module: GcpPrivateProofModule) {
+    super(run, requestId, module, {
+      method: 'GCP_WORK', proveTimeoutMs: PROVE_TIMEOUT_MS,
+      steps: STEPS.map(step => ({ step, host: step === 'identity' ? 'accounts.google.com' : 'logging.clients6.google.com' })),
+      diagnostic: gcpPrivateDiagnostic,
+      identityResult(witness) {
+        const email = module.identityEmail(witness);
+        if (typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
+            email.toLowerCase().endsWith('.gserviceaccount.com')) fail();
+        return { privateAccountEmail: email };
+      },
+      finish: (result, sessionIds) => sanitizeGcpPrivateResult({ kind: 'GCP_PRIVATE_RESULT', version: 1,
+        proofs: proofBundle(result), sessionIds }),
+    });
   }
 }
