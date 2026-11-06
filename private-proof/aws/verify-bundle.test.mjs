@@ -34,7 +34,7 @@ const rejects = value => assert.rejects(verifyAwsBundle(value), /AWS_PRIVATE_BUN
 
 test('reconstructs every obligation and returns only the approved fixed claim', async () => {
   const value = fixture();
-  assert.deepEqual(await verifyAwsBundle(value), { taskType: 'iam-role-trust-update', attribution: 'iam-user', windowDays: 90 });
+  assert.deepEqual(await verifyAwsBundle(value), { activities: ['iam-role-trust-update'], attribution: 'iam-user', windowDays: 90 });
   assert.equal(value.calls.length, value.bundle.proofs.length);
   assert.deepEqual(value.calls.slice(0, 2), ['aws-identity-link-v1', 'aws-event-link-v1']);
   assert.ok(value.calls.includes('aws-xml-text-v1') && value.calls.includes('aws-escaped-atoms-small-v1'));
@@ -77,7 +77,7 @@ test('rejects transplanted native ranges and forged decoded atom commitments', a
 
 test('batches small values and retains complete large-value fallback obligations', async () => {
   const value = fixture(true);
-  assert.deepEqual(await verifyAwsBundle(value), { taskType: 'iam-role-trust-update', attribution: 'iam-user', windowDays: 90 });
+  assert.deepEqual(await verifyAwsBundle(value), { activities: ['iam-role-trust-update'], attribution: 'iam-user', windowDays: 90 });
   for (const id of ['header-v1', 'atom-v1', 'aws-escaped-atom-v1', 'headers-small-v1', 'atoms-small-v1', 'aws-escaped-atoms-small-v1']) {
     assert.ok(value.calls.includes(id), id);
   }

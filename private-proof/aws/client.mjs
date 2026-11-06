@@ -83,10 +83,10 @@ export function createAwsPrivateClient({ attempt, proveCircuit, crypto = globalT
     async prove(witnesses, signal) {
       const buffers = [], openings = new Map(), prepared = [], ids = new Set();
       try {
-        if (consumed || !signal || signal.aborted || !Array.isArray(witnesses) || witnesses.length !== 2) fail();
+        if (consumed || !signal || signal.aborted || !Array.isArray(witnesses) || (witnesses.length < 2 || witnesses.length > 4)) fail();
         consumed = true;
-        // Snapshot both witnesses before the first asynchronous hash; caller mutations cannot alter the plan.
-        for (const [index, step] of ['identity', 'E0'].entries()) {
+        // Snapshot all witnesses before the first asynchronous hash; caller mutations cannot alter the plan.
+        for (const [index, step] of ['identity', 'E0', 'E1', 'E2'].slice(0, witnesses.length).entries()) {
           const value = witnesses[index]; check(value);
           if (value.step !== step || ids.has(value.sessionId) || !exact(value.selections, ['sent', 'recv']) ||
               !exact(value.openings, ['sent', 'recv'])) fail();
@@ -115,7 +115,7 @@ export function createAwsPrivateClient({ attempt, proveCircuit, crypto = globalT
           if (signal.aborted) fail(); check(item.witness);
           inspections.push(await prepare(item.witness, item.planned, openings, buffers, crypto));
         }
-        const targets = assembleAwsBundleExpectations(inspections[0], inspections[1], context.issuedAt);
+        const targets = assembleAwsBundleExpectations(inspections[0], inspections.slice(1), context.issuedAt);
         if (!targets.length || targets.length > 128) fail();
         const proofs = [];
         for (const target of targets) {
@@ -126,7 +126,8 @@ export function createAwsPrivateClient({ attempt, proveCircuit, crypto = globalT
             const fields = awsProofFields(entry);
             if (signal.aborted || entry.circuitId !== target.circuitId || fields.length !== target.publicInputs.length ||
                 fields.some((value, i) => value !== BigInt(target.publicInputs[i]))) fail();
-            proofs.push(entry);
+            // Preserve field values while fitting the existing ingress body limit.
+            proofs.push({ ...entry, publicInputs: fields.map(String) });
           } finally { eraseAwsInputs(inputs); }
         }
         check(prepared[0].witness);

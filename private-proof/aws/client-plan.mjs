@@ -24,7 +24,7 @@ function localHttp(bytes, kind) {
 export function planAwsSession(meta, transcripts) {
   const buffers = [];
   try {
-    if (!meta || !['identity', 'E0'].includes(meta.step) || !/^[A-Za-z0-9_-]{43}$/.test(meta.nonceMac ?? '') ||
+    if (!meta || !['identity', 'E0', 'E1', 'E2'].includes(meta.step) || !/^[A-Za-z0-9_-]{43}$/.test(meta.nonceMac ?? '') ||
         meta.serverName !== (meta.step === 'identity' ? 'iam.amazonaws.com' : 'cloudtrail.us-east-1.amazonaws.com')) fail();
     const identity = meta.step === 'identity';
     const sent = localHttp(transcripts.sent, 'request'); buffers.push(sent.body.bytes);
@@ -76,7 +76,10 @@ export function planAwsSession(meta, transcripts) {
       const bytes = encoder.encode(embedded.value); buffers.push(bytes);
       const event = parseJsonStructure(bytes).root;
       const publicValues = new Set(['eventVersion', 'eventName', 'eventSource', 'awsRegion', 'eventType', 'eventCategory',
-        'managementEvent', 'readOnly', 'responseElements'].map(name => child(event, name)));
+        'managementEvent', 'readOnly'].map(name => child(event, name)));
+      const response = child(event, 'responseElements');
+      if (response?.type === 'null') publicValues.add(response);
+      if (child(event, 'eventSource')?.value === 'ec2.amazonaws.com') publicValues.add(child(response, '_return'));
       publicValues.add(child(child(event, 'userIdentity'), 'type'));
       publicValues.add(child(child(event, 'requestParameters'), 'dryRun'));
       walk(event, publicValues, node => {

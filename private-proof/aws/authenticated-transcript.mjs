@@ -25,7 +25,7 @@ export function authenticatedAwsTranscript(receipt, expected, now = Date.now()) 
   try {
     validateAwsAttempt(expected, now);
     if (!record(receipt) || !record(receipt.session) || receipt.failure !== undefined ||
-        !uuid(expected.sessionId) || !['identity', 'E0'].includes(expected.step)) fail();
+        !uuid(expected.sessionId) || !['identity', 'E0', 'E1', 'E2'].includes(expected.step)) fail();
     const session = receipt.session;
     if (session.id !== expected.sessionId || session.proofId !== expected.proofId ||
         session.pluginSha256 !== expected.pluginSha256 || session.nonceMac !== expected.nonceMac ||
