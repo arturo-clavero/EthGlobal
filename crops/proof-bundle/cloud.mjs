@@ -43,6 +43,8 @@ export function vkHashesFor(bundle, pins) {
   }));
 }
 
+const AWS_ACTIVITIES = ['iam-role-trust-update', 'lambda-configuration-update', 'security-group-ingress'];
+
 function claimOf(provider, result) {
   if (provider === 'gcp') {
     if (!Array.isArray(result?.groups) || ![7, 30, 90].includes(result?.policy?.windowDays)) fail('gcp result');
@@ -54,8 +56,14 @@ function claimOf(provider, result) {
     return { claim: `gcp:observed:${observed.join(',') || 'none'}`, window: result.policy.windowDays };
   }
   if (provider === 'aws') {
-    if (result?.taskType !== 'iam-role-trust-update' || result?.attribution !== 'iam-user' || result?.windowDays !== 90) fail('aws result');
-    return { claim: `aws:${result.taskType}:${result.attribution}`, window: result.windowDays };
+    if (result?.attribution !== 'iam-user' || result?.windowDays !== 90) fail('aws result');
+    if (result.taskType === 'iam-role-trust-update' && !('activities' in result))
+      return { claim: `aws:${result.taskType}:${result.attribution}`, window: result.windowDays };
+    const acts = result.activities;
+    if (!Array.isArray(acts) || acts.length < 1 || acts.length > AWS_ACTIVITIES.length ||
+        acts.some((id, i) => !AWS_ACTIVITIES.includes(id) || (i && AWS_ACTIVITIES.indexOf(id) <= AWS_ACTIVITIES.indexOf(acts[i - 1])))) fail('aws activities');
+    // Only the activity families the bundle proved, in policy order.
+    return { claim: `aws:activity:${acts.join(',')}:${result.attribution}`, window: result.windowDays };
   }
   return fail('provider');
 }
