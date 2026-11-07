@@ -88,3 +88,108 @@ only `humanCheck: { credential, scope: "per-job" }`.
 | World rejects the proof | The API's error code is returned as the reason (for example `all_verifications_failed`) |
 | World unreachable | `unavailable`; the backend fails closed |
 | Same human, same job | The backend finds the nullifier already stored and rejects the application |
+
+## Setup
+
+### 1. Register the relying app
+
+Create an app in the World Developer Portal (`https://developer.world.org`) with World ID 4.0 enabled. Keep three
+values:
+
+| Value | Form the package accepts | Where it lives |
+| --- | --- | --- |
+| App id | `app_…` (`worldIdRequestConfig` in [`client.mjs`](../crops/personhood/client.mjs)) | Client. Public |
+| RP id | `rp_…` (`signRpContext` and `verifyWorldIdResult` in [`server.mjs`](../crops/personhood/server.mjs)) | Client and backend. Public |
+| Signing key | Hex string, passed as `signingKeyHex` | Backend only. The portal shows it once |
+
+### 2. Create one action per job
+
+- The action is `apply:<jobId>`. Build it with `jobAction(jobId)`; `jobId` is 1 to 64 characters of
+  `A-Z a-z 0-9 _ -`. `worldIdRequestConfig` and `signRpContext` reject any other action.
+- Create each action in the portal, in the environment you will use. An action that exists only in staging is not
+  found in production.
+- One action per job gives one nullifier per person per job ([Nullifier scoping](#nullifier-scoping)).
+
+### 3. Choose the signal
+
+The signal is 64 lowercase hex characters the relying app binds the proof to: the evidence commitment, or a sha256 of
+its own application record. `worldIdRequestConfig` rejects anything else. Pass the same value as `signal` to
+`verifyWorldIdResult`, which compares `hashSignal(signal)` with each response's `signal_hash`. If `signal` is
+omitted, that check is skipped, so always pass it.
+
+### 4. Choose the environment
+
+| `environment` | Proofs come from | Use |
+| --- | --- | --- |
+| `production` (default) | The World App | Real users |
+| `staging` | The World ID Simulator (`https://simulator.worldcoin.org`) only | Development and tests |
+
+Use the same value in `worldIdRequestConfig`, in `verifyWorldIdResult` and for the portal action.
+`verifyWorldIdResult` returns `environment-mismatch` if the result is for another environment, and `rejected` if the
+verify API answers for another environment.
+
+### 5. World ID 4.0 only
+
+- The request sets `allow_legacy_proofs: false` (`worldIdRequestConfig`).
+- `verifyWorldIdResult` returns `malformed` for any `protocol_version` other than `4.0`.
+- Both are checked in [`personhood.test.mjs`](../crops/personhood/personhood.test.mjs).
+
+### 6. Keep the signing key on the server
+
+Read the signing key from an environment variable or secret store on the backend and pass it to `signRpContext`. It
+must never be in the client bundle, a response body or logs. Anyone holding it can create requests in the relying
+app's name. If it leaks, rotate it in the portal.
+
+### 7. Store nullifiers
+
+`verifyWorldIdResult` returns `{ ok: true, nullifier, credential }`, with the nullifier as lowercase hex. The package
+stores nothing. The backend should:
+
+- store `(action, nullifier)` in its own database with a unique constraint, and treat a conflict as "already applied
+  to this job";
+- insert before accepting the application, so two parallel submissions cannot both pass;
+- keep the nullifier private: not in the attestation (`createAttestation` accepts only
+  `humanCheck: { credential, scope: "per-job" }`), not on Arkiv, not in logs, not sent to the client.
+
+### 8. End to end
+
+Backend, issuing a request context:
+
+```js
+import { jobAction, signRpContext } from '@tlsn-fork/personhood';
+
+const action = jobAction(jobId);
+const rpContext = signRpContext({
+  rpId: process.env.WORLD_ID_RP_ID,                // any variable names; the package reads no environment
+  action,
+  signingKeyHex: process.env.WORLD_ID_SIGNING_KEY,
+});
+// return { action, rpContext } to the page
+```
+
+Page:
+
+```js
+import { worldIdRequest } from '@tlsn-fork/personhood/client';
+
+const request = await worldIdRequest({ appId: 'app_…', action, signal: commitment, rpContext,
+  environment: 'production' });
+showQrOrLink(request.connectorURI);
+const completion = await request.pollUntilCompletion();
+if (completion.success) await sendToBackend(completion.result);   // unchanged
+```
+
+Backend, verifying:
+
+```js
+import { verifyWorldIdResult } from '@tlsn-fork/personhood';
+
+const outcome = await verifyWorldIdResult(result, { rpId: process.env.WORLD_ID_RP_ID, action, signal: commitment,
+  environment: 'production' });
+if (!outcome.ok) return reject(outcome.reason);
+await saveNullifierOrReject(action, outcome.nullifier);           // unique (action, nullifier)
+const humanCheck = { credential: outcome.credential, scope: 'per-job' };   // optional, for createAttestation
+```
+
+`rp_context` expires (IDKit default: 300 seconds; `signRpContext` takes an optional `ttl`). Ask the backend for a new
+one for each attempt.

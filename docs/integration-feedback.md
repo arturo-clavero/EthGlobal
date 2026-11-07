@@ -48,7 +48,8 @@ Format: what we tried → what happened → impact → suggestion.
 - Tried: following examples found by search.
 - Happened: Braga was sunset (12 August) after Kaolin; Rabdi (chain id `7794095`) is current. Older material still
   ranks highly: hub "skills" pages pinned to Braga and SDK 0.6, and Python SDK docs using `btl` and
-  `string_annotations`, where SDK 1.0 uses attributes and `expiration`.
+  `string_annotations`, where SDK 1.0 uses attributes and `expiration`. Arkiv's docs also mention a Tiramisu testnet
+  (chain id `7738577`), while SDK 1.0.1 defines only `rabdi`, so which testnet is current was ambiguous.
 - Impact: time lost on examples that no longer run.
 - Suggestion: mark superseded pages with a banner naming the current network and SDK version.
 

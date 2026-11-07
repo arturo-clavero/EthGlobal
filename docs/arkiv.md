@@ -142,3 +142,84 @@ with its payload, stays in the blocks. Treat everything written to Arkiv as perm
 - **Lifetime.** At most 7,884,000 blocks (about 182.5 days) from the write. The package caps it at 182 days and
   defaults to 180. Longer retention needs re-publishing or `extendEntity` before expiry.
 - **Reading many.** The package reads at most 20 pages of 100 entities per query.
+
+## Setup
+
+Reading needs none of this. These steps are for the operator who publishes attestations.
+
+### 1. Writer wallet
+
+- **Create a new key used only for publishing.** Never use a personal wallet: the writer address is public on every
+  entity, and `findAttestations({ owner })` lists everything it wrote.
+- The package expects the key as `0x` followed by 64 hex characters (`writeClient` in
+  [`write.mjs`](../crops/pin-registry/write.mjs)). One way to make one, from `crops/pin-registry` after `npm ci`:
+
+  ```sh
+  node --input-type=module -e "import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
+  const key = generatePrivateKey(); console.log(key, privateKeyToAccount(key).address)"
+  ```
+
+- Keep the key in the publishing backend's environment or secret store and pass it as `privateKey`. The package never
+  stores it.
+- Fund the address with testnet tGLM from the faucet: <https://hub.arkiv.network/faucet>.
+
+### 2. Access key (optional)
+
+Without an access key (`accessKey: ''`, the default) calls use the public endpoint, which is heavily rate limited.
+Create a free key at <https://hub.arkiv.network/access-keys> and pass it as `accessKey`. It is appended to the RPC
+URL, so treat it as a secret on the backend; a key shipped in a public page can be copied.
+
+### 3. Network
+
+The package uses `rabdi()` from `@arkiv-network/sdk` 1.0.1 unless told otherwise (`arkivChain` in
+[`read.mjs`](../crops/pin-registry/read.mjs)): chain id `7794095`, RPC
+`https://rpc.rabdi.db-chain.testnet.arkiv.network`. SDK 1.0.1 defines only `rabdi` and `localhost`. Arkiv's docs also
+mention a Tiramisu testnet (chain id `7738577`). Confirm the current testnet in Arkiv's docs
+(<https://docs.arkiv.network>) before publishing. To use another chain, pass a viem chain as `chain`, and `rpcUrl` if
+needed, to every read and write call.
+
+### 4. Lifetime
+
+`publishAttestation` and `publishBundle` take `expiresInSeconds`: default 180 days, at least 60 seconds, at most 182
+days (`lifetime` in `write.mjs`). This is the entity's lifetime on Arkiv. The attestation's own `expiresAt` is a
+separate, signed field: `verifyAttestation` returns `expired` after it. Set `expiresAt` no later than the entity
+lifetime, so an attestation does not outlive what readers can find.
+
+### 5. Publish
+
+```js
+import { canonicalize, publicBundle } from '@tlsn-fork/proof-bundle';
+import { publishAttestation, publishBundle } from '@tlsn-fork/pin-registry';
+
+const connection = { privateKey: process.env.ARKIV_WRITER_KEY, accessKey: process.env.ARKIV_ACCESS_KEY ?? '' };
+const { entityKey, txHash } = await publishAttestation(signed, connection);
+
+// Only if the lengths of hidden values may be public (see "What is kept off Arkiv").
+await publishBundle({ commitment: signed.commitment, bundleJson: canonicalize(publicBundle(bundle)) }, connection);
+```
+
+The variable names are examples; the package reads no environment. `bundleJson` must be exactly
+`canonicalize(publicBundle(bundle))`: its sha256 is the attestation's `proofHash`, which the verify page uses to find
+the bundle.
+
+### 6. Check what you published
+
+Use the queries in [Queries a third party can run](#queries-a-third-party-can-run), or open
+`verify/?commitment=<64 hex>` ([verification.md](verification.md)). To list everything the writer wallet published:
+
+```js
+const mine = await findAttestations({ owner: '0x…writer address', accessKey: '' });
+```
+
+### Failure behaviour
+
+| Case | What happens |
+| --- | --- |
+| Bad key, malformed attestation, bundle over 16 parts, lifetime out of range | The call rejects before any transaction (`PIN_REGISTRY_INVALID: …`); tested in [`registry.test.mjs`](../crops/pin-registry/registry.test.mjs) |
+| RPC or transaction error | The SDK error is passed on as a rejection. The package does not retry or queue |
+| A bundle part fails part-way | Earlier parts stay on Arkiv. `findBundle` ignores a set with missing parts, so readers see no bundle; publishing again writes a complete set |
+| Malformed or mismatched entities when reading | Skipped by `findAttestations` and `findBundle`; anyone can write |
+
+Nothing in this repository calls the publish functions, so whether a failed write blocks the user is the caller's
+choice. An attestation is valid without Arkiv: the verify page also checks a dropped file. A caller that should
+never block the user can answer first, publish afterwards, and retry or log a failure.
