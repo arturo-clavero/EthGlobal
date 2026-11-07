@@ -160,6 +160,26 @@ ws.onerror = (error) => {
 };
 ```
 
+### Proof protocol on `/session`
+
+The client sends `register`, then one `reveal_config` per proof **before** the prover's prove request: the
+verifier checks each proof against the ranges announced for it.
+
+- Results: a `REVEAL` range must lie in revealed plaintext; a `HASH` range must match a hash commitment of exactly
+  that range, direction and algorithm, and its result is the commitment's hex digest. A hash-only proof (nothing
+  revealed) is accepted. An `ALL` handler must cover the whole transcript of its direction.
+- Several proofs on one session: `register` with `"multiReveal": true` gets `session_registered` with
+  `"multiReveal": true` and may then prove the same transcript several times: per proof a `reveal_config` (from
+  the second proof on with a `step`, `[A-Za-z0-9_-]{1,32}`), the prove request, then
+  `reveal_completed {reveal, resultId, results}`. `{"type":"finish"}` (or the client closing, or 60 s without a
+  further `reveal_config`) ends it with `session_closed {reveals}`. At most 64 proofs. Each proof is a result of
+  its own (webhook shape unchanged): the first under the session id, each later one under a fresh UUID, its
+  `sessionData` carrying the proof's `step`, `revealOf` (the session id) and `reveal` (0-based index); a client
+  cannot set those two keys. The first proof proves the server identity; a later one may leave it out but may
+  not name another server. A failed proof ends the session; earlier results stand. A client without
+  `multiReveal` sees the upstream protocol (`session_completed`).
+- The TLS connection, and then each proof, may take up to 300 s.
+
 ## Verifier Architecture
 
 The verifier implementation follows this flow:

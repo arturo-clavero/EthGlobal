@@ -98,6 +98,7 @@ fn disclosure_config(mixed: bool, response: &[u8]) -> crate::RevealConfig {
             },
         };
         return crate::RevealConfig {
+            step: None,
             sent: vec![all(REQUEST.len(), HandlerType::Sent)],
             recv: vec![all(response.len(), HandlerType::Recv)],
         };
@@ -113,7 +114,7 @@ fn disclosure_config(mixed: bool, response: &[u8]) -> crate::RevealConfig {
     recv.extend(partition(response, recv_line_end, body_start, &[], HandlerType::Recv, HandlerPart::Headers));
     recv.extend(partition(response, body_start, response.len(),
         &[b"\"2026-10-13T00:00:00Z\""], HandlerType::Recv, HandlerPart::Body));
-    crate::RevealConfig { sent, recv }
+    crate::RevealConfig { sent, recv, step: None }
 }
 
 async fn roundtrip(mixed: bool) {
@@ -284,7 +285,7 @@ async fn roundtrip(mixed: bool) {
     }
     if mixed {
         for alteration in 0..4 {
-            let mut invalid = crate::RevealConfig { sent: disclosure.sent.clone(), recv: disclosure.recv.clone() };
+            let mut invalid = crate::RevealConfig { sent: disclosure.sent.clone(), recv: disclosure.recv.clone(), step: None };
             let range = invalid.sent.iter_mut().find(|range|
                 matches!(range.handler.action, crate::HandlerAction::Hash { .. })).unwrap();
             match alteration {

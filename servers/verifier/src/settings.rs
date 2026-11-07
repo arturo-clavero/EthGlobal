@@ -13,6 +13,12 @@ pub(crate) const REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long after `register` the client may take to send `reveal_config`
 /// (covers the 30 s prover connect plus the TLS connection).
 pub(crate) const REVEAL_CONFIG_TIMEOUT: Duration = Duration::from_secs(180);
+/// How long a multi-reveal session may wait after a proof's result for its
+/// next `reveal_config` (or `finish`). Past it the session ends as if
+/// finished; the results already delivered stand.
+pub(crate) const NEXT_REVEAL_TIMEOUT: Duration = Duration::from_secs(60);
+/// Proofs one multi-reveal session may make.
+pub(crate) const MAX_REVEALS_PER_SESSION: usize = 64;
 
 #[derive(Clone)]
 pub(crate) struct Settings {
@@ -23,6 +29,13 @@ pub(crate) struct Settings {
     /// `None` keeps upstream behaviour (any value).
     pub(crate) max_recv_data: Option<usize>,
     pub(crate) max_sent_data: Option<usize>,
+    /// Tests only: the address a Proxy-mode session dials instead of
+    /// `<host>:443` (a local TLS fixture).
+    #[cfg(test)]
+    pub(crate) test_dial: Option<String>,
+    /// Tests only: DER root certificates replacing Mozilla's (the fixture's CA).
+    #[cfg(test)]
+    pub(crate) test_roots: Option<Vec<Vec<u8>>>,
 }
 
 /// Holds one active-session slot; released on drop. Shared by the session
@@ -44,6 +57,10 @@ impl Default for Settings {
             active_sessions: Arc::new(AtomicUsize::new(0)),
             max_recv_data: None,
             max_sent_data: None,
+            #[cfg(test)]
+            test_dial: None,
+            #[cfg(test)]
+            test_roots: None,
         }
     }
 }

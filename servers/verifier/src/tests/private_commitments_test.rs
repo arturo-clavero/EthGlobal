@@ -67,6 +67,7 @@ fn hash_result_requires_exact_indices_direction_and_algorithm() {
 fn zero_reveal_full_hashes_validate_and_render_only_digests() {
     let transcript = PartialTranscript::new(12, 23);
     let config = RevealConfig {
+        step: None,
         sent: vec![range(0, 12, HandlerType::Sent)],
         recv: vec![range(0, 23, HandlerType::Recv)],
     };
@@ -93,6 +94,7 @@ fn all_handler_cannot_label_a_partial_commitment_as_full_transcript() {
     let transcript = PartialTranscript::new(12, 23);
     for (start, end) in [(0, 11), (1, 12), (0, 13), (0, 0), (6, 2)] {
         let config = RevealConfig {
+            step: None,
             sent: vec![range(start, end, HandlerType::Sent)],
             recv: vec![],
         };
@@ -110,6 +112,7 @@ fn reveal_and_hash_actions_cannot_substitute_each_others_evidence() {
     let mut transcript = PartialTranscript::new(12, 0);
     let commitments = [commitment(Direction::Sent, RangeSet::from(0..12), HashAlgId::SHA256)];
     let mut config = RevealConfig {
+        step: None,
         sent: vec![range(0, 12, HandlerType::Sent)],
         recv: vec![],
     };
