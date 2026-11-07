@@ -4,6 +4,9 @@ CROPS is the Ethereum Foundation's mandate for the software it supports: **C**en
 **P**rivacy and **S**ecurity. This page states, for each letter, what this fork does, what it does not, and what
 every third party learns. Component details are in [architecture.md](architecture.md).
 
+Each guarantee, the code that enforces it and the test that checks it are listed in
+[crops-compliance.md](crops-compliance.md).
+
 ## Censorship resistance
 
 What holds:

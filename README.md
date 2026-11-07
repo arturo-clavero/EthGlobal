@@ -14,6 +14,7 @@
 
 - [Architecture](docs/architecture.md): components, data flow of a private proof, trust model, build
 - [CROPS](docs/crops.md): censorship resistance, open source, privacy and security, with trade-offs
+- [CROPS compliance](docs/crops-compliance.md): each guarantee with the code that enforces it, its test and its limits
 - [Arkiv](docs/arkiv.md): what is published, how to query it, what is kept off
 - [World ID](docs/world-id.md): the optional one-human-per-job check
 - [Verification](docs/verification.md): the verify page, verifier keys, hosting
