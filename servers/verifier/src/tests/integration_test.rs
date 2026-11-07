@@ -183,6 +183,7 @@ webhooks:
     let app_state = Arc::new(crate::AppState {
         sessions: Arc::new(Mutex::new(HashMap::new())),
         config: Arc::new(config),
+        settings: Arc::new(crate::settings::Settings::default()),
     });
 
     let app = Router::new()
@@ -395,6 +396,7 @@ async fn run_prover_with_stream<S>(
     mpc_tls_config: MpcTlsConfig,
     tls_client_config: TlsClientConfig,
     proxy_stream: S,
+    session_client: &mut SessionClient,
 ) -> Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error + Send + Sync>>
 where
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
@@ -460,6 +462,31 @@ where
         recv.len()
     );
 
+    // The verifier waits for this exact reveal configuration before accepting the proof.
+    let sent_ranges = vec![RangeWithHandler {
+        start: 0,
+        end: sent.len(),
+        handler: Handler {
+            handler_type: HandlerType::Sent,
+            part: HandlerPart::All,
+            action: HandlerAction::Reveal,
+        },
+    }];
+    let recv_ranges = vec![RangeWithHandler {
+        start: 0,
+        end: recv.len(),
+        handler: Handler {
+            handler_type: HandlerType::Recv,
+            part: HandlerPart::All,
+            action: HandlerAction::Reveal,
+        },
+    }];
+
+    session_client
+        .send_reveal_config(sent_ranges, recv_ranges)
+        .await
+        .map_err(|e| format!("Failed to send reveal config: {}", e))?;
+
     // 10. Build proof configuration (reveal everything including server identity)
     let mut prove_config = ProveConfig::builder(prover.transcript());
     prove_config.server_identity();
@@ -496,6 +523,7 @@ async fn run_prover(
     proxy_url: String,
     max_sent_data: usize,
     max_recv_data: usize,
+    session_client: &mut SessionClient,
 ) -> Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error + Send + Sync>> {
     info!("[Prover] Connecting to verifier at {}", verifier_ws_url);
 
@@ -550,12 +578,12 @@ async fn run_prover(
         let proxy_ws = connect_wss(&proxy_url).await?;
         info!("[Prover] Connected to proxy (wss)");
         let proxy_stream = WsStream::new(proxy_ws);
-        run_prover_with_stream(prover, mpc_tls_config, tls_client_config, proxy_stream).await
+        run_prover_with_stream(prover, mpc_tls_config, tls_client_config, proxy_stream, session_client).await
     } else {
         let proxy_ws = connect_ws(&proxy_url).await?;
         info!("[Prover] Connected to proxy (ws)");
         let proxy_stream = WsStream::new(proxy_ws);
-        run_prover_with_stream(prover, mpc_tls_config, tls_client_config, proxy_stream).await
+        run_prover_with_stream(prover, mpc_tls_config, tls_client_config, proxy_stream, session_client).await
     };
 
     // 8. Close the session handle
@@ -673,11 +701,19 @@ async fn test_webhook_integration_with_github() {
     );
 
     let prover_handle = tokio::spawn(async move {
-        run_prover(verifier_ws_url, proxy_url, MAX_SENT_DATA, MAX_RECV_DATA).await
+        let result = run_prover(
+            verifier_ws_url,
+            proxy_url,
+            MAX_SENT_DATA,
+            MAX_RECV_DATA,
+            &mut session,
+        )
+        .await;
+        (result, session)
     });
 
-    // 5. Wait for prover to complete first so we know the actual transcript sizes
-    let prover_result = tokio::time::timeout(Duration::from_secs(120), prover_handle)
+    // Keep the existing deadline around TLS, reveal configuration and proof completion.
+    let (prover_result, mut session) = tokio::time::timeout(Duration::from_secs(120), prover_handle)
         .await
         .expect("Prover timed out")
         .expect("Prover task panicked");
@@ -689,32 +725,6 @@ async fn test_webhook_integration_with_github() {
         sent_transcript.len(),
         recv_transcript.len()
     );
-
-    // 6. Send reveal config with actual transcript sizes
-    // The reveal_config ranges must match the authenticated transcript ranges
-    let sent_ranges = vec![RangeWithHandler {
-        start: 0,
-        end: sent_transcript.len(),
-        handler: Handler {
-            handler_type: HandlerType::Sent,
-            part: HandlerPart::All,
-            action: HandlerAction::Reveal,
-        },
-    }];
-    let recv_ranges = vec![RangeWithHandler {
-        start: 0,
-        end: recv_transcript.len(),
-        handler: Handler {
-            handler_type: HandlerType::Recv,
-            part: HandlerPart::All,
-            action: HandlerAction::Reveal,
-        },
-    }];
-
-    session
-        .send_reveal_config(sent_ranges, recv_ranges)
-        .await
-        .expect("Failed to send reveal config");
 
     // 7. Wait for session completion
     let results = tokio::time::timeout(Duration::from_secs(30), session.wait_for_completion())

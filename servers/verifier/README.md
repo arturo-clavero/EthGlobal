@@ -23,6 +23,14 @@ A Rust-based HTTP server with WebSocket support for TLSNotary verification opera
 
 ## Building
 
+The server builds against the same pinned, patched TLSNotary core as the extension's WASM prover (mux backpressure,
+several proofs on one session). Prepare it once at `core/tlsn` (the path `Cargo.toml` points at; it is git-ignored):
+
+```bash
+# From the repository root
+bash core/prepare-core.sh "$PWD/core/tlsn"
+```
+
 ```bash
 # From the verifier package directory
 cargo build
@@ -152,6 +160,26 @@ ws.onerror = (error) => {
 };
 ```
 
+### Proof protocol on `/session`
+
+The client sends `register`, then one `reveal_config` per proof **before** the prover's prove request: the
+verifier checks each proof against the ranges announced for it.
+
+- Results: a `REVEAL` range must lie in revealed plaintext; a `HASH` range must match a hash commitment of exactly
+  that range, direction and algorithm, and its result is the commitment's hex digest. A hash-only proof (nothing
+  revealed) is accepted. An `ALL` handler must cover the whole transcript of its direction.
+- Several proofs on one session: `register` with `"multiReveal": true` gets `session_registered` with
+  `"multiReveal": true` and may then prove the same transcript several times: per proof a `reveal_config` (from
+  the second proof on with a `step`, `[A-Za-z0-9_-]{1,32}`), the prove request, then
+  `reveal_completed {reveal, resultId, results}`. `{"type":"finish"}` (or the client closing, or 60 s without a
+  further `reveal_config`) ends it with `session_closed {reveals}`. At most 64 proofs. Each proof is a result of
+  its own (webhook shape unchanged): the first under the session id, each later one under a fresh UUID, its
+  `sessionData` carrying the proof's `step`, `revealOf` (the session id) and `reveal` (0-based index); a client
+  cannot set those two keys. The first proof proves the server identity; a later one may leave it out but may
+  not name another server. A failed proof ends the session; earlier results stand. A client without
+  `multiReveal` sees the upstream protocol (`session_completed`).
+- The TLS connection, and then each proof, may take up to 300 s.
+
 ## Verifier Architecture
 
 The verifier implementation follows this flow:
@@ -187,6 +215,20 @@ The server configuration is currently hardcoded in `main.rs`:
 - **Port**: `7047`
 
 To change these, modify the `SocketAddr::from()` call in `main.rs`.
+
+Limits, read from the environment at start-up (a malformed value stops the server):
+
+| Variable | Default | Effect |
+|---|---|---|
+| `TLSN_MAX_SESSIONS` | 20 | `/session` upgrades get 429 while this many sessions are active |
+| `TLSN_MAX_RECV_DATA`, `TLSN_MAX_SENT_DATA` | none | a `register` declaring more bytes is refused |
+| `TLSN_MAX_REVEAL_BLOCKS` | 2500 | a proof touching more 16-byte AES blocks (revealed and hash-committed ranges, per direction) is refused with `REVEAL_TOO_LARGE`, at `reveal_config` and again at the prove request, before the prove phase where verifier memory grows with the block count |
+| `TLSN_MEMORY_BUDGET_MB` | 85% of the container's cgroup memory limit; none without a limit | memory-weighted admission: 64 MB per session at the `/session` upgrade (429 when full), then the step budget of its blocks (180 MB up to 120 blocks, 320 up to 400, 520 up to 820, 860 up to 1420, 1640 up to 2520) at `reveal_config` and at the prove request, waiting up to 30 s in a FIFO queue, else `VERIFIER_BUSY` (retryable). The reveal ceiling is lowered to what one session can be admitted with; at least 180 |
+
+Refusals log one JSON line each (`tlsn.reveal.too_large`, `tlsn.admission`), counts only. A session holds its
+reservation (the largest of its proofs) until it ends.
+
+A new `/session` socket must send `register` within 30 s and its first `reveal_config` within 180 s.
 
 ## Development
 
