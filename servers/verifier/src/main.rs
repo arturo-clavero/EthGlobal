@@ -1060,9 +1060,7 @@ async fn run_verifier_task(
                 }
             };
 
-            // Validate that reveal_config ranges match authenticated transcript
-            // ranges. Hash-committed ranges aren't in `sent_authed`/`received_authed`
-            // (those hold revealed plaintext), so we union the commitment ranges in.
+            // Validate each action against its own authenticated evidence.
             if let Err((direction, start, end)) = verify_reveal_config(
                 &reveal_config,
                 &transcript,
@@ -1180,54 +1178,58 @@ async fn run_verifier_task(
     info!("[{}] Verifier task completed and cleaned up", session_id);
 }
 
-/// Validates that all ranges in reveal config are fully within authenticated transcript ranges.
-///
-/// "Authenticated" means either:
-/// - Revealed as plaintext (in `transcript.sent_authed()` / `received_authed()`), or
-/// - Hash-committed via `TranscriptCommitment::Hash` (the prover proved knowledge of
-///   plaintext whose hash matches the commitment; the range itself is bound).
-///
-/// Returns error with (direction, start, end) if any range contains unauthenticated data.
+/// Validates revealed ranges against plaintext and hash ranges against exact commitments.
 fn verify_reveal_config(
     reveal_config: &RevealConfig,
     transcript: &PartialTranscript,
     transcript_commitments: &[tlsn::transcript::TranscriptCommitment],
 ) -> Result<(), (String, usize, usize)> {
-    use tlsn::transcript::{Direction, TranscriptCommitment};
+    use tlsn::transcript::Direction;
 
-    // Union of revealed + hash-committed ranges, per direction.
-    let mut sent_auth = transcript.sent_authed().clone();
-    let mut recv_auth = transcript.received_authed().clone();
-    for commitment in transcript_commitments {
-        if let TranscriptCommitment::Hash(hash) = commitment {
-            match hash.direction {
-                Direction::Sent => sent_auth.union_mut(&hash.idx),
-                Direction::Received => recv_auth.union_mut(&hash.idx),
-            }
-        }
-    }
-
-    fn validate_ranges_against_auth_set(
-        ranges: &[RangeWithHandler],
-        auth_set: &RangeSet<usize>,
-        direction: &str,
-    ) -> Result<(), (String, usize, usize)> {
+    for (ranges, auth_set, length, direction, label) in [
+        (
+            &reveal_config.sent,
+            transcript.sent_authed(),
+            transcript.len_sent(),
+            Direction::Sent,
+            "sent",
+        ),
+        (
+            &reveal_config.recv,
+            transcript.received_authed(),
+            transcript.len_received(),
+            Direction::Received,
+            "recv",
+        ),
+    ] {
         for range in ranges {
-            if !(range.start..range.end).all(|i| auth_set.contains(&i)) {
-                return Err((direction.to_string(), range.start, range.end));
+            let valid = range.start < range.end
+                && range.end <= length
+                && matches!(
+                    (direction, &range.handler.handler_type),
+                    (Direction::Sent, HandlerType::Sent)
+                        | (Direction::Received, HandlerType::Recv)
+                )
+                && (!matches!(range.handler.part, HandlerPart::All)
+                    || (range.start == 0 && range.end == length))
+                && match range.handler.action {
+                    HandlerAction::Reveal => {
+                        (range.start..range.end).all(|i| auth_set.contains(&i))
+                    }
+                    HandlerAction::Hash { algorithm } => find_hash_digest(
+                        transcript_commitments,
+                        direction,
+                        range.start,
+                        range.end,
+                        algorithm,
+                    )
+                    .is_some(),
+                };
+            if !valid {
+                return Err((label.to_string(), range.start, range.end));
             }
-
-            debug!(
-                "✅ {} range [{}, {}) validated - fully within authenticated ranges",
-                direction, range.start, range.end
-            );
         }
-        Ok(())
     }
-
-    validate_ranges_against_auth_set(&reveal_config.sent, &sent_auth, "sent")?;
-    validate_ranges_against_auth_set(&reveal_config.recv, &recv_auth, "recv")?;
-
     Ok(())
 }
 
@@ -1256,11 +1258,12 @@ fn process_ranges(
         .iter()
         .map(|range_with_handler| {
             let value = match range_with_handler.handler.action {
-                HandlerAction::Hash { .. } => find_hash_digest(
+                HandlerAction::Hash { algorithm } => find_hash_digest(
                     transcript_commitments,
                     direction,
                     range_with_handler.start,
                     range_with_handler.end,
+                    algorithm,
                 )
                 .unwrap_or_else(|| {
                     format!(
@@ -1303,21 +1306,31 @@ fn process_ranges(
         .collect()
 }
 
-/// Finds the hash digest (hex) for a given range+direction from the list of
-/// transcript commitments. Returns `None` if no `Hash` commitment covers the
-/// exact range for the requested direction.
+/// Finds the hash digest for an exact range, direction, and algorithm.
 fn find_hash_digest(
     commitments: &[tlsn::transcript::TranscriptCommitment],
     direction: tlsn::transcript::Direction,
     start: usize,
     end: usize,
+    algorithm: HashAlgorithm,
 ) -> Option<String> {
+    use tlsn::hash::HashAlgId;
     use tlsn::transcript::TranscriptCommitment;
 
+    if start >= end {
+        return None;
+    }
+    let algorithm = match algorithm {
+        HashAlgorithm::Blake3 => HashAlgId::BLAKE3,
+        HashAlgorithm::Sha256 => HashAlgId::SHA256,
+        HashAlgorithm::Keccak256 => HashAlgId::KECCAK256,
+    };
+    let idx = RangeSet::from(start..end);
     for commitment in commitments {
         if let TranscriptCommitment::Hash(hash) = commitment {
             if hash.direction == direction
-                && (start..end).all(|i| hash.idx.contains(&i))
+                && hash.idx == idx
+                && hash.hash.alg == algorithm
             {
                 let bytes = hash.hash.value.as_bytes();
                 let mut hex_str = String::with_capacity(bytes.len() * 2);

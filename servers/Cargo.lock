@@ -4689,6 +4689,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "tlsn-server-fixture-certs"
+version = "0.0.0"
+
+[[package]]
 name = "tlsn-tls-client"
 version = "0.1.0-alpha.15"
 dependencies = [
@@ -4755,7 +4759,9 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "sha1",
+ "sha2",
  "tlsn",
+ "tlsn-server-fixture-certs",
  "tokio",
  "tokio-native-tls",
  "tokio-tungstenite",

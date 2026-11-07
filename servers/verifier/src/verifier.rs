@@ -3,7 +3,7 @@ use eyre::eyre;
 use tlsn::{
     config::verifier::VerifierConfig,
     connection::{DnsName, ServerName},
-    transcript::{PartialTranscript, TranscriptCommitment},
+    transcript::{ContentType, PartialTranscript, Record, TlsTranscript, TranscriptCommitment},
     verifier::{VerifierCommitStart, VerifierOutput},
     webpki::RootCertStore,
     Session,
@@ -134,6 +134,14 @@ pub async fn verifier<T: AsyncWrite + AsyncRead + Send + Unpin + 'static>(
         .await
         .map_err(|e| eyre!("Accept verification failed: {}", e))?;
 
+    // A hash-only proof reveals no plaintext, so `transcript` is `None`: rebuild
+    // its (all-zero) shape from the authenticated TLS records.
+    let transcript = verified_transcript(
+        transcript,
+        &transcript_commitments,
+        verifier.tls_transcript(),
+    );
+
     // Close the verifier
     verifier
         .close()
@@ -153,8 +161,8 @@ pub async fn verifier<T: AsyncWrite + AsyncRead + Send + Unpin + 'static>(
 
     let server_name =
         server_name.ok_or_else(|| eyre!("prover should have revealed server name"))?;
-    let transcript =
-        transcript.ok_or_else(|| eyre!("prover should have revealed transcript data"))?;
+    let transcript = transcript
+        .ok_or_else(|| eyre!("prover should have revealed or committed transcript data"))?;
 
     info!("server_name: {:?}", server_name);
     debug!("transcript: {:?}", &transcript);
@@ -183,6 +191,34 @@ pub async fn verifier<T: AsyncWrite + AsyncRead + Send + Unpin + 'static>(
     Ok((dns_name, transcript, transcript_commitments))
 }
 
+/// The proof's transcript, or for a proof with hash commitments and nothing
+/// revealed, an all-zero transcript of the authenticated lengths.
+fn verified_transcript(
+    transcript: Option<PartialTranscript>,
+    commitments: &[TranscriptCommitment],
+    tls_transcript: &TlsTranscript,
+) -> Option<PartialTranscript> {
+    transcript.or_else(|| {
+        (!commitments.is_empty())
+            .then(|| redacted_transcript(tls_transcript.sent(), tls_transcript.recv()))
+    })
+}
+
+fn redacted_transcript(sent: &[Record], received: &[Record]) -> PartialTranscript {
+    // Match tlsn 47aee45 verifier/verify.rs::collect_ciphertext exactly. Its
+    // TLS 1.2 record builder splits nonce/tag out of Record.ciphertext; the
+    // remaining ApplicationData length is the authenticated plaintext length.
+    // Do not use raw wire-record lengths or prover-selected commitment ends.
+    let [sent_len, received_len] = [sent, received].map(|records| {
+        records
+            .iter()
+            .filter(|record| record.typ == ContentType::ApplicationData)
+            .map(|record| record.ciphertext.len())
+            .sum()
+    });
+    PartialTranscript::new(sent_len, received_len)
+}
+
 /// Compress long sequences of redacted emojis for better readability
 #[allow(unused)]
 fn compress_redacted_sequences(text: String) -> String {
@@ -196,3 +232,71 @@ fn bytes_to_redacted_string(bytes: &[u8], to: &str) -> Result<String, eyre::ErrR
         .map_err(|err| eyre!("Failed to parse bytes to redacted string: {err}"))?
         .replace('\0', to))
 }
+
+#[cfg(test)]
+mod private_commitments_tests {
+    use super::redacted_transcript;
+    use rangeset::set::RangeSet;
+    use tlsn::{
+        hash::{HashAlgId, TypedHash},
+        transcript::{hash::PlaintextHash, ContentType, Direction, Record, TranscriptCommitment},
+    };
+
+    fn record(typ: ContentType, bytes: &[u8]) -> Record {
+        Record {
+            seq: 1,
+            typ,
+            // Even if a caller supplies plaintext, the fallback must never copy it.
+            plaintext: Some(bytes.to_vec()),
+            explicit_nonce: vec![0; 8],
+            ciphertext: vec![0xa5; bytes.len()],
+            tag: Some(vec![0; 16]),
+        }
+    }
+
+    #[test]
+    fn lengths_follow_authenticated_application_records_without_copying_plaintext() {
+        let sent = [
+            record(ContentType::Handshake, b"handshake"),
+            record(ContentType::ApplicationData, b"private request"),
+            record(ContentType::ApplicationData, b"continuation"),
+            record(ContentType::Alert, b"alert"),
+        ];
+        let recv = [record(ContentType::ApplicationData, b"private response")];
+        let transcript = redacted_transcript(&sent, &recv);
+        assert_eq!(transcript.len_sent(), b"private requestcontinuation".len());
+        assert_eq!(transcript.len_received(), b"private response".len());
+        assert!(transcript.sent_unsafe().iter().all(|byte| *byte == 0));
+        assert!(transcript.received_unsafe().iter().all(|byte| *byte == 0));
+        assert!(transcript.sent_authed().is_empty());
+        assert!(transcript.received_authed().is_empty());
+
+        // A commitment ending early must not shorten the authoritative length
+        // or be accepted under an ALL handler, even with zero revealed bytes.
+        for end in [transcript.len_sent() - 1, transcript.len_sent()] {
+            let commitments = [TranscriptCommitment::Hash(PlaintextHash {
+                direction: Direction::Sent,
+                idx: RangeSet::from(0..end),
+                hash: TypedHash {
+                    alg: HashAlgId::SHA256,
+                    value: vec![0xab; 32].try_into().unwrap(),
+                },
+            })];
+            let config = serde_json::from_value(serde_json::json!({
+                "sent": [{"start": 0, "end": end, "handler": {
+                    "type": "SENT", "part": "ALL",
+                    "action": {"kind": "HASH", "algorithm": "SHA256"}
+                }}],
+                "recv": []
+            })).unwrap();
+            assert_eq!(
+                crate::verify_reveal_config(&config, &transcript, &commitments).is_ok(),
+                end == transcript.len_sent()
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/private_proxy_test.rs"]
+mod private_proxy_tests;
