@@ -191,9 +191,12 @@ and the blinded commitments. It never sees the private values or the blinders.
 (for example that a log entry falls inside the window, or that the identity and the event belong to the same
 account). Their public inputs include the blinded hashes, the lengths of hidden values and the time cutoff.
 
-**Learned by the relying party.** The coarse claim only, for example `gcp:observed:g1,g4` with a 30-day window, or
-`aws:activity:iam-role-trust-update,security-group-ingress:iam-user` (the AWS activity families proved) with a 90-day window. The claim format admits only lowercase words, digits and
-separators ([`commitment.mjs`](../crops/proof-bundle/commitment.mjs)), so no free text or identifier fits.
+**Learned by the relying party.** The coarse claim only. For GCP it is `gcp:observed:<groups>` with a 7, 30 or 90-day
+window, for example `gcp:observed:g1,g4`. For AWS it is `aws:activity:<families>:iam-user` with a 90-day window,
+listing the activity families proved in the table's order, for example
+`aws:activity:iam-role-trust-update,security-group-ingress:iam-user` (`claimOf` in
+[`cloud.mjs`](../crops/proof-bundle/cloud.mjs)). The claim format admits only lowercase words, digits and separators
+([`commitment.mjs`](../crops/proof-bundle/commitment.mjs)), so no free text or identifier fits.
 
 **Published.** The attestation (claim, proof hash, verification-key hashes, optional core and plugin digests, times)
 and its signature; the public bundle only if the operator chooses to ([arkiv.md](arkiv.md#what-is-kept-off-arkiv)).
@@ -203,6 +206,9 @@ proofHash, window?, vkHashes?, coreDigest?, pluginSha256? }`, where `proofHash` 
 bundle (proofs and public inputs, without session ids).
 
 ## Trust model
+
+Each guarantee below, with the code that enforces it and its test, is listed in
+[crops-compliance.md](crops-compliance.md).
 
 | Party | Trusted for | Not trusted for |
 | --- | --- | --- |
