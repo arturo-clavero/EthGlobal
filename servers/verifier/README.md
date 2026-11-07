@@ -222,6 +222,11 @@ Limits, read from the environment at start-up (a malformed value stops the serve
 |---|---|---|
 | `TLSN_MAX_SESSIONS` | 20 | `/session` upgrades get 429 while this many sessions are active |
 | `TLSN_MAX_RECV_DATA`, `TLSN_MAX_SENT_DATA` | none | a `register` declaring more bytes is refused |
+| `TLSN_MAX_REVEAL_BLOCKS` | 2500 | a proof touching more 16-byte AES blocks (revealed and hash-committed ranges, per direction) is refused with `REVEAL_TOO_LARGE`, at `reveal_config` and again at the prove request, before the prove phase where verifier memory grows with the block count |
+| `TLSN_MEMORY_BUDGET_MB` | 85% of the container's cgroup memory limit; none without a limit | memory-weighted admission: 64 MB per session at the `/session` upgrade (429 when full), then the step budget of its blocks (180 MB up to 120 blocks, 320 up to 400, 520 up to 820, 860 up to 1420, 1640 up to 2520) at `reveal_config` and at the prove request, waiting up to 30 s in a FIFO queue, else `VERIFIER_BUSY` (retryable). The reveal ceiling is lowered to what one session can be admitted with; at least 180 |
+
+Refusals log one JSON line each (`tlsn.reveal.too_large`, `tlsn.admission`), counts only. A session holds its
+reservation (the largest of its proofs) until it ends.
 
 A new `/session` socket must send `register` within 30 s and its first `reveal_config` within 180 s.
 

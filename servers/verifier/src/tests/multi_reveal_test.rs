@@ -3,8 +3,9 @@
 //! `/verifier`; the verifier dials the fixture (`Settings::test_dial`) and
 //! trusts its CA (`Settings::test_roots`). Each proof gets its own result
 //! (`reveal_completed`, webhook) with its step and the session link; the
-//! session closes on `finish`; a single-proof client sees the upstream
-//! protocol unchanged. Local servers only.
+//! session closes on `finish`; the reveal ceiling and the memory admission
+//! apply per proof; a single-proof client sees the upstream protocol
+//! unchanged. Local servers only.
 
 use std::collections::HashMap;
 use std::future::IntoFuture;
@@ -14,7 +15,7 @@ use std::time::Duration;
 
 use axum::{extract::State, routing::post, Json, Router};
 use futures_util::io::{AsyncReadExt as _, AsyncWriteExt as _};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
@@ -35,19 +36,12 @@ use tlsn::{
 };
 use tlsn_server_fixture_certs::{CA_CERT_DER, SERVER_CERT_DER, SERVER_DOMAIN, SERVER_KEY_DER};
 
+use super::reveal_test::{next_text, Client};
+use crate::admission::MemoryBudget;
+use crate::reveal::REVEAL_TOO_LARGE;
 use crate::settings::Settings;
 
 const WAIT: Duration = Duration::from_secs(120);
-
-type Client =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
-
-async fn next_text(ws: &mut Client, wait: Duration) -> Option<String> {
-    match tokio::time::timeout(wait, ws.next()).await {
-        Ok(Some(Ok(Message::Text(text)))) => Some(text.as_str().to_owned()),
-        _ => None,
-    }
-}
 const BODY: usize = 6_000;
 
 // ---------------------------------------------------------------------------
@@ -151,7 +145,7 @@ async fn verifier(settings: Settings) -> Verifier {
             ..settings
         }),
     });
-    let app = crate::router(state.clone()).into_make_service_with_connect_info::<SocketAddr>();
+    let app = crate::router(state.clone());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -282,7 +276,8 @@ async fn payloads(v: &Verifier, n: usize) -> Vec<Value> {
 
 async fn freed(v: &Verifier) -> bool {
     for _ in 0..100 {
-        if v.state.sessions.lock().await.is_empty() && v.state.settings.active_sessions() == 0 {
+        let memory = v.state.settings.memory_budget.as_ref().map_or(0, |b| b.reserved_mb());
+        if v.state.sessions.lock().await.is_empty() && v.state.settings.active_sessions() == 0 && memory == 0 {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -305,7 +300,11 @@ fn text(results: &Value) -> Vec<String> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn three_proofs_of_one_session_give_three_results_then_close() {
-    let v = verifier(Settings::default()).await;
+    let v = verifier(Settings {
+        memory_budget: Some(MemoryBudget::new(2_600, Duration::from_secs(10))),
+        ..Settings::default()
+    })
+    .await;
     // A client cannot claim the link keys: they are the verifier's.
     let (mut ws, sid, reply) = register(
         v.addr,
@@ -336,6 +335,9 @@ async fn three_proofs_of_one_session_give_three_results_then_close() {
         want.extend(recv_ranges.iter().map(|&(a, b)| String::from_utf8(recv[a..b].to_vec()).unwrap()));
         assert_eq!(text(&reply["results"]), want, "proof {i}");
         ids.push(id);
+        // The session holds the largest proof's step budget (all three are in the
+        // smallest bracket here), never their sum.
+        assert_eq!(v.state.settings.memory_budget.as_ref().unwrap().reserved_mb(), 180);
     }
     assert_eq!(ids[0], sid, "the first result keeps the session id");
     assert!(ids[1] != ids[0] && ids[2] != ids[1] && ids[2] != ids[0]);
@@ -345,7 +347,7 @@ async fn three_proofs_of_one_session_give_three_results_then_close() {
     handle.close();
     let closed: Value = serde_json::from_str(&next_text(&mut ws, WAIT).await.expect("session_closed")).unwrap();
     assert_eq!(closed, json!({ "type": "session_closed", "reveals": 3 }));
-    assert!(freed(&v).await, "the session still holds its slot");
+    assert!(freed(&v).await, "the session still holds its slot or memory");
 
     // One webhook per proof, each its own result: id, step, link, its own ranges.
     let got = payloads(&v, 3).await;
@@ -392,6 +394,28 @@ async fn a_single_proof_session_is_unchanged() {
     assert!(!session.contains_key("revealOf") && !session.contains_key("reveal"), "{session:?}");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_later_proof_over_the_ceiling_ends_the_session_and_earlier_results_stand() {
+    let v = verifier(Settings {
+        max_reveal_blocks: 10,
+        ..Settings::default()
+    })
+    .await;
+    let (mut ws, sid, _) = register(v.addr, true, json!({ "method": "TEST", "step": "P0" })).await;
+    let (mut prover, _handle) = committed_prover(v.addr, &sid).await;
+    let first = prove(&mut ws, &mut prover, &[(0, 14)], &[(0, 15)], true, None).await;
+    assert_eq!(first["type"], "reveal_completed", "{first}");
+    // 11 blocks: refused at reveal_config, before the prover proves it.
+    let over = json!({ "type": "reveal_config", "step": "P0w1", "sent": [],
+        "recv": [range(16, 176, "BODY"), range(400, 401, "BODY")] });
+    ws.send(Message::Text(over.to_string().into())).await.unwrap();
+    let reply = next_text(&mut ws, WAIT).await.expect("an error");
+    assert!(reply.contains("\"type\":\"error\"") && reply.contains(REVEAL_TOO_LARGE), "{reply}");
+    assert!(freed(&v).await, "the refused session still holds its slot");
+    let got = payloads(&v, 1).await;
+    assert_eq!(got.len(), 1, "the first proof's result stands");
+    assert_eq!(got[0]["session"]["step"], "P0");
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_later_proof_must_name_its_step_and_finish_needs_a_proof() {
@@ -421,7 +445,11 @@ async fn a_later_proof_must_name_its_step_and_finish_needs_a_proof() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_client_that_closes_after_a_proof_ends_the_session_cleanly() {
-    let v = verifier(Settings::default()).await;
+    let v = verifier(Settings {
+        memory_budget: Some(MemoryBudget::new(2_600, Duration::from_secs(10))),
+        ..Settings::default()
+    })
+    .await;
     let (mut ws, sid, _) = register(v.addr, true, json!({ "method": "TEST", "step": "P0" })).await;
     let (mut prover, handle) = committed_prover(v.addr, &sid).await;
     let first = prove(&mut ws, &mut prover, &[(0, 14)], &[(0, 15)], true, None).await;
@@ -429,6 +457,57 @@ async fn a_client_that_closes_after_a_proof_ends_the_session_cleanly() {
     drop(ws);
     prover.close().await.unwrap();
     handle.close();
-    assert!(freed(&v).await, "slot kept after the client left");
+    assert!(freed(&v).await, "slot or memory kept after the client left");
+    assert_eq!(payloads(&v, 1).await.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_reservation_follows_the_largest_proof_until_the_session_ends() {
+    let v = verifier(Settings {
+        memory_budget: Some(MemoryBudget::new(2_600, Duration::from_secs(10))),
+        ..Settings::default()
+    })
+    .await;
+    let reserved = || v.state.settings.memory_budget.as_ref().unwrap().reserved_mb();
+    let (mut ws, sid, _) = register(v.addr, true, json!({ "method": "TEST", "step": "P0" })).await;
+    assert_eq!(reserved(), crate::admission::BASE_MB);
+    let (mut prover, handle) = committed_prover(v.addr, &sid).await;
+    let head = prover.transcript().received().windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+    prove(&mut ws, &mut prover, &[(0, 14)], &[(0, 15)], true, None).await;
+    assert_eq!(reserved(), 180);
+    // 200 blocks: the next bracket (320 MB).
+    let big = prove(&mut ws, &mut prover, &[], &[(head, head + 200 * 16)], false, Some("P0w1")).await;
+    assert_eq!(big["type"], "reveal_completed", "{big}");
+    assert_eq!(reserved(), 320);
+    // A small proof after it does not shrink the reservation.
+    prove(&mut ws, &mut prover, &[], &[(head + 4000, head + 4004)], false, Some("P0w2")).await;
+    assert_eq!(reserved(), 320);
+    ws.send(Message::Text(json!({ "type": "finish" }).to_string().into())).await.unwrap();
+    prover.close().await.unwrap();
+    handle.close();
+    assert!(freed(&v).await, "the reservation outlived the session");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_later_prove_request_over_the_ceiling_is_rejected_at_the_request() {
+    let v = verifier(Settings {
+        max_reveal_blocks: 10,
+        ..Settings::default()
+    })
+    .await;
+    let (mut ws, sid, _) = register(v.addr, true, json!({ "method": "TEST", "step": "P0" })).await;
+    let (mut prover, _handle) = committed_prover(v.addr, &sid).await;
+    prove(&mut ws, &mut prover, &[(0, 14)], &[(0, 15)], true, None).await;
+    // The reveal_config announces 1 block; the prove request carries 11.
+    let small = json!({ "type": "reveal_config", "step": "P0w1", "sent": [], "recv": [range(16, 20, "BODY")] });
+    ws.send(Message::Text(small.to_string().into())).await.unwrap();
+    let mut builder = ProveConfig::builder(prover.transcript());
+    builder.reveal_recv(&(16..176)).unwrap();
+    builder.reveal_recv(&(400..401)).unwrap();
+    let proved = tokio::time::timeout(WAIT, prover.prove(&builder.build().unwrap())).await.expect("prove stalled");
+    assert!(proved.is_err(), "the verifier proved an oversize request");
+    let reply = next_text(&mut ws, WAIT).await.expect("an error");
+    assert!(reply.contains("\"type\":\"error\"") && reply.contains(REVEAL_TOO_LARGE), "{reply}");
+    assert!(freed(&v).await);
     assert_eq!(payloads(&v, 1).await.len(), 1);
 }

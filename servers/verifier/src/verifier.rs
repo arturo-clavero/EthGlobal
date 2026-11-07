@@ -149,15 +149,22 @@ impl CommittedSession {
         self.reveals
     }
 
-    /// Verifies ONE prove request of the prover. On success the session stays
-    /// open for the next proof. On any error the session is closed (`finish`
-    /// then only waits for the driver).
-    pub async fn reveal(&mut self) -> Result<RevealOutput, eyre::ErrReport> {
+    /// Verifies ONE prove request of the prover: the reveal ceiling and the
+    /// memory admission run on its own blocks before `accept()`, as for a
+    /// single-proof session. On success the session stays open for the next
+    /// proof. On any error the session is closed (`finish` then only waits for
+    /// the driver).
+    pub async fn reveal(
+        &mut self,
+        settings: &crate::settings::Settings,
+        log_ctx: (&str, &std::collections::HashMap<String, String>),
+        memory: Option<&crate::admission::SessionMemory>,
+    ) -> Result<RevealOutput, eyre::ErrReport> {
         let verifier = self
             .verifier
             .take()
             .ok_or_else(|| eyre!("the verifier session is closed"))?;
-        let result = self.reveal_inner(verifier).await;
+        let result = self.reveal_inner(verifier, settings, log_ctx, memory).await;
         if result.is_err() {
             self.handle.close();
         }
@@ -167,12 +174,54 @@ impl CommittedSession {
     async fn reveal_inner(
         &mut self,
         verifier: Verifier<state::Committed>,
+        settings: &crate::settings::Settings,
+        log_ctx: (&str, &std::collections::HashMap<String, String>),
+        memory: Option<&crate::admission::SessionMemory>,
     ) -> Result<RevealOutput, eyre::ErrReport> {
         // Verify the proof
         let verifier = verifier
             .verify()
             .await
             .map_err(|e| eyre!("Verification failed: {}", e))?;
+
+        // The prove request is what this verifier would authenticate. Refuse it
+        // before `accept()` (where memory grows with the block count) when it is
+        // over the ceiling, whatever the session's reveal_config said.
+        let (session_id, session_data) = log_ctx;
+        let blocks = crate::reveal::request_blocks(verifier.request());
+        if let Some(msg) = crate::reveal::check(blocks, settings.max_reveal_blocks) {
+            crate::log_event(&crate::RevealRefusedEvent {
+                event: "tlsn.reveal.too_large",
+                session_id,
+                method: session_data.get("method").map(String::as_str),
+                step: session_data.get("step").map(String::as_str),
+                stage: "prove_request",
+                blocks,
+                limit: settings.max_reveal_blocks,
+            });
+            // Best effort: tell the prover why; the session fails either way.
+            let _ = verifier.reject(Some(&msg)).await;
+            return Err(eyre!(msg));
+        }
+
+        // The memory admission again, with the blocks of the request itself (free
+        // when the session already holds them from its reveal_config; waits for
+        // that decision when both race; queues for the difference when the
+        // request is larger than announced). The reservation only grows, so a
+        // session of several proofs holds the largest of them until it ends.
+        if let Err(msg) = crate::admit_reveal(
+            memory,
+            settings.memory_budget.as_deref(),
+            blocks,
+            "prove_request",
+            session_id,
+            session_data,
+        )
+        .await
+        {
+            let _ = verifier.reject(Some(&msg)).await;
+            return Err(eyre!(msg));
+        }
 
         let (
             VerifierOutput {

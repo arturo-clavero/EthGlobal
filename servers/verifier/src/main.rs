@@ -1,3 +1,5 @@
+mod admission;
+mod reveal;
 mod settings;
 mod verifier;
 mod ws;
@@ -497,6 +499,38 @@ pub(crate) async fn session_ws_handler(
             "Verifier is at capacity, retry shortly".to_string(),
         ));
     };
+    // Phase 1 of the memory admission: the base reservation, without waiting.
+    // A full budget is a 429 like the session count.
+    let mut slot = slot;
+    if let Some(budget) = state.settings.memory_budget.as_ref() {
+        match budget.try_session() {
+            Some(memory) => slot.memory = Some(memory),
+            None => {
+                warn!(
+                    "Rejecting new session: memory budget full ({} of {} MB reserved)",
+                    budget.reserved_mb(),
+                    budget.total_mb()
+                );
+                log_event(&AdmissionEvent {
+                    event: "tlsn.admission",
+                    session_id: "",
+                    method: None,
+                    step: None,
+                    stage: "register",
+                    outcome: "busy",
+                    blocks: None,
+                    reserve_mb: Some(admission::BASE_MB),
+                    wait_ms: 0,
+                    reserved_mb: budget.reserved_mb(),
+                    budget_mb: budget.total_mb(),
+                });
+                return Err((
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "Verifier is at capacity (memory), retry shortly".to_string(),
+                ));
+            }
+        }
+    }
     let slot = Arc::new(slot);
     Ok(ws.on_upgrade(move |socket| handle_session_websocket(socket, state, slot)))
 }
@@ -672,7 +706,7 @@ async fn handle_session_websocket(
     let task_slot = slot.clone();
     // Kept so a refused reveal_config can stop the task before it proves.
     let verifier_task = tokio::spawn(async move {
-        // The task holds the slot until it ends.
+        // The task holds the slot (and its memory reservation) until it ends.
         run_verifier_task(
             session_id_clone,
             session_config,
@@ -785,6 +819,61 @@ async fn handle_session_websocket(
             reveal_config.recv.len()
         );
 
+        // Refuse a reveal over the AES-block ceiling before the prover proves it
+        // (the prove phase is where verifier memory grows with the block count). The
+        // verifier task also checks the prove request itself (`verifier.rs`). Per
+        // proof; a refused later proof ends the session (earlier results stand).
+        let ranges = |v: &[RangeWithHandler]| v.iter().map(|r| r.start..r.end).collect::<Vec<_>>();
+        let blocks = reveal::reveal_config_blocks(&ranges(&reveal_config.sent), &ranges(&reveal_config.recv));
+        let step = reveal_config
+            .step
+            .clone()
+            .or_else(|| session_data.get("step").cloned());
+        if let Some(msg) = reveal::check(blocks, state.settings.max_reveal_blocks) {
+            log_event(&RevealRefusedEvent {
+                event: "tlsn.reveal.too_large",
+                session_id: &session_id,
+                method: session_data.get("method").map(String::as_str),
+                step: step.as_deref(),
+                stage: "reveal_config",
+                blocks,
+                limit: state.settings.max_reveal_blocks,
+            });
+            verifier_task.abort();
+            cleanup_session(&state, &session_id).await;
+            send_error(&mut socket, &msg).await;
+            let _ = socket.close(None).await;
+            return;
+        }
+
+        // Phase 2 of the memory admission: reserve the session's step budget for
+        // these blocks, queueing (FIFO, bounded) behind sessions that hold the memory.
+        // Refused: as for an oversize reveal, the task is stopped and the session
+        // removed, so the base reservation and the slot are freed when we return.
+        // The reservation only grows: a session of several proofs holds the budget
+        // of its largest proof until it ends.
+        let mut admission_data = session_data.clone();
+        if let Some(step) = &step {
+            admission_data.insert("step".to_string(), step.clone());
+        }
+        if let Err(msg) = admit_reveal(
+            slot.memory.as_ref(),
+            state.settings.memory_budget.as_deref(),
+            blocks,
+            "reveal_config",
+            &session_id,
+            &admission_data,
+        )
+        .await
+        {
+            error!("[{}] {}", session_id, msg);
+            verifier_task.abort();
+            cleanup_session(&state, &session_id).await;
+            send_error(&mut socket, &msg).await;
+            let _ = socket.close(None).await;
+            return;
+        }
+
         // Forward reveal config to verifier task
         if reveal_config_tx.send(reveal_config).await.is_err() {
             error!(
@@ -873,6 +962,90 @@ async fn handle_session_websocket(
     // Close the WebSocket
     let _ = socket.close(None).await;
     info!("[{}] Session WebSocket closed", session_id);
+}
+
+/// One `{"event":"tlsn.reveal.too_large",…}` line per refused reveal
+/// (`stage`: `reveal_config` or `prove_request`). Counts only, no content.
+#[derive(Serialize)]
+pub(crate) struct RevealRefusedEvent<'a> {
+    pub(crate) event: &'static str,
+    #[serde(rename = "sessionId")]
+    pub(crate) session_id: &'a str,
+    pub(crate) method: Option<&'a str>,
+    pub(crate) step: Option<&'a str>,
+    pub(crate) stage: &'static str,
+    pub(crate) blocks: usize,
+    pub(crate) limit: usize,
+}
+
+/// One `{"event":"tlsn.admission",…}` line per memory decision of a session
+/// (`stage`: `register`, `reveal_config` or `prove_request`; `outcome`:
+/// `admitted`, `busy` or `too_large`). Counts only, no content.
+#[derive(Serialize)]
+pub(crate) struct AdmissionEvent<'a> {
+    pub(crate) event: &'static str,
+    #[serde(rename = "sessionId")]
+    pub(crate) session_id: &'a str,
+    pub(crate) method: Option<&'a str>,
+    pub(crate) step: Option<&'a str>,
+    pub(crate) stage: &'static str,
+    pub(crate) outcome: &'static str,
+    pub(crate) blocks: Option<usize>,
+    /// The session's reservation (admitted) or what it needed (busy), MB.
+    #[serde(rename = "reserveMb")]
+    pub(crate) reserve_mb: Option<u32>,
+    #[serde(rename = "waitMs")]
+    pub(crate) wait_ms: u64,
+    /// The whole verifier's reservations after the decision, MB.
+    #[serde(rename = "reservedMb")]
+    pub(crate) reserved_mb: u32,
+    #[serde(rename = "budgetMb")]
+    pub(crate) budget_mb: u32,
+}
+
+/// Phase 2 of the memory admission for `blocks` (at `reveal_config` or at the
+/// prove request), logged. `Err` = the session's error text.
+pub(crate) async fn admit_reveal(
+    memory: Option<&admission::SessionMemory>,
+    budget: Option<&admission::MemoryBudget>,
+    blocks: usize,
+    stage: &'static str,
+    session_id: &str,
+    session_data: &HashMap<String, String>,
+) -> Result<(), String> {
+    let (Some(memory), Some(budget)) = (memory, budget) else {
+        return Ok(());
+    };
+    let decision = memory.reserve(blocks).await;
+    let (outcome, reserve_mb, waited) = match &decision {
+        Ok(a) => ("admitted", Some(a.reserved_mb), a.waited),
+        Err(admission::Refusal::Busy { need_mb, waited }) => ("busy", Some(*need_mb), *waited),
+        Err(admission::Refusal::TooLarge) => ("too_large", None, Duration::ZERO),
+    };
+    log_event(&AdmissionEvent {
+        event: "tlsn.admission",
+        session_id,
+        method: session_data.get("method").map(String::as_str),
+        step: session_data.get("step").map(String::as_str),
+        stage,
+        outcome,
+        blocks: Some(blocks),
+        reserve_mb,
+        wait_ms: waited.as_millis() as u64,
+        reserved_mb: budget.reserved_mb(),
+        budget_mb: budget.total_mb(),
+    });
+    decision
+        .map(|_| ())
+        .map_err(|refusal| refusal.message(blocks, budget.total_mb()))
+}
+
+/// One JSON log line.
+fn log_event<T: Serialize>(event: &T) {
+    match serde_json::to_string(event) {
+        Ok(line) => info!("{}", line),
+        Err(e) => error!("event serialisation failed: {}", e),
+    }
 }
 
 /// sessionData keys only the verifier sets, on the results of a multi-reveal
@@ -1189,7 +1362,7 @@ async fn run_verifier_task(
     socket_rx: oneshot::Receiver<TungsteniteStream>,
     result_tx: mpsc::Sender<VerificationResult>,
     state: Arc<AppState>,
-    _slot: Arc<settings::SessionSlot>,
+    slot: Arc<settings::SessionSlot>,
 ) {
     info!(
         "[{}] Verifier task started, waiting for WebSocket connection...",
@@ -1293,7 +1466,19 @@ async fn run_verifier_task(
     let mut session_server: Option<tlsn::connection::DnsName> = None;
     while let Some(reveal_config) = reveal_config_rx.recv().await {
         let reveal = session.reveals();
-        let verified = timeout(verification_timeout, session.reveal()).await;
+        let step = reveal_config
+            .step
+            .clone()
+            .or_else(|| session_data.get("step").cloned());
+        let mut log_data = session_data.clone();
+        if let Some(step) = &step {
+            log_data.insert("step".to_string(), step.clone());
+        }
+        let verified = timeout(
+            verification_timeout,
+            session.reveal(&state.settings, (&session_id, &log_data), slot.memory.as_ref()),
+        )
+        .await;
         let out = match verified {
             Ok(Ok(out)) => out,
             Ok(Err(e)) => {
