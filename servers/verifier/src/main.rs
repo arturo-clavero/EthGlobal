@@ -1,3 +1,4 @@
+mod settings;
 mod verifier;
 mod ws;
 
@@ -58,17 +59,15 @@ async fn main() {
     let app_state = Arc::new(AppState {
         sessions: Arc::new(Mutex::new(HashMap::new())),
         config: Arc::new(config),
+        settings: Arc::new(settings::Settings::from_env()),
     });
+    info!(
+        "Session cap: {} active sessions",
+        app_state.settings.max_sessions
+    );
 
     // Build router with routes
-    let app = Router::new()
-        .route("/health", get(health_handler))
-        .route("/info", get(info_handler))
-        .route("/session", get(session_ws_handler))
-        .route("/verifier", get(verifier_ws_handler))
-        .route("/proxy", get(proxy_ws_handler))
-        .layer(CorsLayer::permissive())
-        .with_state(app_state);
+    let app = router(app_state);
 
     // Start server
     let port: u16 = std::env::var("PORT")
@@ -100,6 +99,18 @@ async fn main() {
     axum::serve(listener, app)
         .await
         .expect("Server error");
+}
+
+/// All routes.
+pub(crate) fn router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/health", get(health_handler))
+        .route("/info", get(info_handler))
+        .route("/session", get(session_ws_handler))
+        .route("/verifier", get(verifier_ws_handler))
+        .route("/proxy", get(proxy_ws_handler))
+        .layer(CorsLayer::permissive())
+        .with_state(state)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -211,6 +222,7 @@ pub(crate) struct SessionData {
 pub(crate) struct AppState {
     pub(crate) sessions: Arc<Mutex<HashMap<String, SessionData>>>,
     pub(crate) config: Arc<Config>,
+    pub(crate) settings: Arc<settings::Settings>,
 }
 
 // Query parameters for verifier WebSocket connection
@@ -426,8 +438,22 @@ pub(crate) async fn info_handler() -> impl IntoResponse {
 pub(crate) async fn session_ws_handler(
     ws: WsUpgrade,
     State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_session_websocket(socket, state))
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // The slot is shared by the socket handler and the verifier task and is
+    // released when both are done.
+    let Some(slot) = state.settings.try_acquire_session() else {
+        warn!(
+            "Rejecting new session: {} active sessions (max {})",
+            state.settings.active_sessions(),
+            state.settings.max_sessions
+        );
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            "Verifier is at capacity, retry shortly".to_string(),
+        ));
+    };
+    let slot = Arc::new(slot);
+    Ok(ws.on_upgrade(move |socket| handle_session_websocket(socket, state, slot)))
 }
 
 /// Helper to send typed server messages
@@ -453,15 +479,27 @@ async fn send_error(socket: &mut TungsteniteStream, message: &str) {
 }
 
 // Handle the session WebSocket connection with typed message protocol
-async fn handle_session_websocket(mut socket: TungsteniteStream, state: Arc<AppState>) {
+async fn handle_session_websocket(
+    mut socket: TungsteniteStream,
+    state: Arc<AppState>,
+    slot: Arc<settings::SessionSlot>,
+) {
     use futures_util::StreamExt;
 
     // Generate session ID upfront (but don't send yet - wait for register)
     let session_id = Uuid::new_v4().to_string();
     info!("[{}] New session WebSocket connected", session_id);
 
-    // Wait for "register" message first
-    let register_msg = match socket.next().await {
+    // Wait for "register" message first (bounded, so an idle socket cannot hold a slot)
+    let first = match timeout(settings::REGISTER_TIMEOUT, socket.next()).await {
+        Ok(msg) => msg,
+        Err(_) => {
+            error!("[{}] Timed out waiting for registration", session_id);
+            send_error(&mut socket, "Timed out waiting for register").await;
+            return;
+        }
+    };
+    let register_msg = match first {
         Some(Ok(Message::Text(text))) => text,
         Some(Ok(msg)) => {
             error!("[{}] Expected text message, got: {:?}", session_id, msg);
@@ -501,6 +539,21 @@ async fn handle_session_websocket(mut socket: TungsteniteStream, state: Arc<AppS
             return;
         }
     };
+
+    let over_recv = state.settings.max_recv_data.is_some_and(|cap| max_recv_data > cap);
+    let over_sent = state.settings.max_sent_data.is_some_and(|cap| max_sent_data > cap);
+    if over_recv || over_sent {
+        error!(
+            "[{}] Registration exceeds limits: maxRecvData={} (cap {:?}), maxSentData={} (cap {:?})",
+            session_id,
+            max_recv_data,
+            state.settings.max_recv_data,
+            max_sent_data,
+            state.settings.max_sent_data
+        );
+        send_error(&mut socket, "maxRecvData/maxSentData exceed verifier limits").await;
+        return;
+    }
 
     info!(
         "[{}] Received registration: maxRecvData={}, maxSentData={}, sessionData keys: {:?}",
@@ -558,7 +611,9 @@ async fn handle_session_websocket(mut socket: TungsteniteStream, state: Arc<AppS
     let session_id_clone = session_id.clone();
     let state_clone = state.clone();
     let session_data_clone = session_data_storage.clone();
+    let task_slot = slot.clone();
     tokio::spawn(async move {
+        let _slot = task_slot;
         run_verifier_task(
             session_id_clone,
             session_config,
@@ -577,7 +632,15 @@ async fn handle_session_websocket(mut socket: TungsteniteStream, state: Arc<AppS
     );
 
     // Wait for reveal_config message
-    let reveal_msg = match socket.next().await {
+    let next = match timeout(settings::REVEAL_CONFIG_TIMEOUT, socket.next()).await {
+        Ok(msg) => msg,
+        Err(_) => {
+            error!("[{}] Timed out waiting for reveal_config", session_id);
+            send_error(&mut socket, "Timed out waiting for reveal_config").await;
+            return;
+        }
+    };
+    let reveal_msg = match next {
         Some(Ok(Message::Text(text))) => text,
         Some(Ok(msg)) => {
             error!(

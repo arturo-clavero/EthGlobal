@@ -196,6 +196,15 @@ The server configuration is currently hardcoded in `main.rs`:
 
 To change these, modify the `SocketAddr::from()` call in `main.rs`.
 
+Limits, read from the environment at start-up (a malformed value stops the server):
+
+| Variable | Default | Effect |
+|---|---|---|
+| `TLSN_MAX_SESSIONS` | 20 | `/session` upgrades get 429 while this many sessions are active |
+| `TLSN_MAX_RECV_DATA`, `TLSN_MAX_SENT_DATA` | none | a `register` declaring more bytes is refused |
+
+A new `/session` socket must send `register` within 30 s and its first `reveal_config` within 180 s.
+
 ## Development
 
 ### Adding New Routes

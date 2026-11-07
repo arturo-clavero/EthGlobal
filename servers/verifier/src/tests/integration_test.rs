@@ -183,6 +183,7 @@ webhooks:
     let app_state = Arc::new(crate::AppState {
         sessions: Arc::new(Mutex::new(HashMap::new())),
         config: Arc::new(config),
+        settings: Arc::new(crate::settings::Settings::default()),
     });
 
     let app = Router::new()
