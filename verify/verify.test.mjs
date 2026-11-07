@@ -71,3 +71,15 @@ test('a dropped attestation plus bundle file verifies without arkiv', async () =
   assert.equal(result.status, 'verified');
   assert.throws(() => parseDropped('{"hello":1}'), /Unrecognised/);
 });
+
+test('aws claims must list one known family per proven event, in policy order', async () => {
+  const { claimFromPublicInputs } = await import('./verify.mjs');
+  const proofs = n => Array.from({ length: n }, () => [{ circuitId: 'aws-identity-link-v1' }, { circuitId: 'aws-event-link-v1' }]).flat();
+  const two = 'aws:activity:iam-role-trust-update,security-group-ingress:iam-user';
+  assert.equal(claimFromPublicInputs('aws', { proofs: proofs(2) }, { claim: two }).claim, two);
+  assert.notEqual(claimFromPublicInputs('aws', { proofs: proofs(1) }, { claim: two }).claim, two);
+  const reversed = 'aws:activity:security-group-ingress,iam-role-trust-update:iam-user';
+  assert.notEqual(claimFromPublicInputs('aws', { proofs: proofs(2) }, { claim: reversed }).claim, reversed);
+  assert.equal(claimFromPublicInputs('aws', { proofs: proofs(1) }, { claim: 'aws:iam-role-trust-update:iam-user' }).claim, 'aws:iam-role-trust-update:iam-user');
+  assert.equal(claimFromPublicInputs('aws', { proofs: [{ circuitId: 'aws-event-link-v1' }] }, { claim: two }), null);
+});

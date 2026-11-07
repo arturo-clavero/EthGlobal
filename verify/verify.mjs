@@ -26,7 +26,9 @@ function vkPin(pin) {
 }
 
 /** Recomputes the coarse claim from the proven public inputs where the circuits make it public. */
-export function claimFromPublicInputs(provider, bundle, { gcpBatches } = {}) {
+const AWS_ACTIVITIES = ['iam-role-trust-update', 'lambda-configuration-update', 'security-group-ingress'];
+
+export function claimFromPublicInputs(provider, bundle, { gcpBatches, claim } = {}) {
   if (provider === 'gcp' && gcpBatches) {
     const timestamps = bundle.proofs.filter(entry => entry.circuitId === 'timestamps-v1');
     if (timestamps.length !== gcpBatches.length) return null;
@@ -42,9 +44,17 @@ export function claimFromPublicInputs(provider, bundle, { gcpBatches } = {}) {
     return { claim: `gcp:observed:${observed.join(',') || 'none'}`, window: [...windows][0] };
   }
   if (provider === 'aws') {
-    const ids = new Set(bundle.proofs.map(entry => entry.circuitId));
-    return ids.has('aws-identity-link-v1') && ids.has('aws-event-link-v1')
-      ? { claim: 'aws:iam-role-trust-update:iam-user', window: 90 } : null;
+    const count = id => bundle.proofs.filter(entry => entry.circuitId === id).length;
+    const events = count('aws-event-link-v1');
+    if (!events || count('aws-identity-link-v1') !== events) return null;
+    // The family names come from authenticated receipts that stay private; the public inputs prove one linked event
+    // per family. So a grouped claim must list known families, in policy order, one per proven event.
+    const families = /^aws:activity:([a-z,-]+):iam-user$/.exec(claim ?? '')?.[1]?.split(',');
+    if (families) {
+      const ordered = families.every((id, i) => AWS_ACTIVITIES.includes(id) && (!i || AWS_ACTIVITIES.indexOf(id) > AWS_ACTIVITIES.indexOf(families[i - 1])));
+      return { claim: ordered && families.length === events ? claim : 'aws:activity:inconsistent:iam-user', window: 90 };
+    }
+    return events === 1 ? { claim: 'aws:iam-role-trust-update:iam-user', window: 90 } : null;
   }
   return null;
 }
@@ -99,7 +109,7 @@ export async function evaluate({ commitment, attestations, keys, bundle, pins = 
     if (!add(ok, pinned ? 'Verification keys are the ones pinned in this repository' : 'Verification keys cover exactly the circuits used'))
       result.status = 'failed';
   }
-  const derived = claimFromPublicInputs(attestation.provider, clean, { gcpBatches });
+  const derived = claimFromPublicInputs(attestation.provider, clean, { gcpBatches, claim: attestation.claim });
   if (derived) {
     if (!add(derived.claim === attestation.claim && derived.window === attestation.window, 'Claim matches the proven public inputs'))
       result.status = 'failed';

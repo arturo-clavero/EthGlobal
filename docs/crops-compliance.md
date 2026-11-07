@@ -86,10 +86,8 @@ root.
 ### Known gaps
 
 - The verify page checks signatures, hashes and pins, not the zero-knowledge proofs themselves.
-- For AWS, `claimFromPublicInputs` in `verify/verify.mjs` only knows the single-family claim
-  `aws:iam-role-trust-update:iam-user`. A grouped claim (`aws:activity:<families>:iam-user`) with a published bundle
-  therefore fails the "Claim matches the proven public inputs" check. Without a published bundle the page shows
-  "Signed by the verifier".
+- For AWS, the verify page checks that the bundle proves one linked event per family the claim lists. It cannot
+  recompute the family names: they come from receipts that stay private, so it trusts the signer for them.
 - `publishAttestation` and `publishBundle` reject on any error and do not retry. Whether a failed write blocks the
   user is up to the caller ([arkiv.md](arkiv.md#failure-behaviour)).
 
