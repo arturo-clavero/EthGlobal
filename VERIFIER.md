@@ -545,7 +545,8 @@ CMD ["tlsn-verifier-server"]
 **Build and Run:**
 
 ```bash
-docker build -t tlsn-verifier-server .
+# from the repository root: the image prepares the pinned core from core/
+docker build -f servers/verifier/Dockerfile -t tlsn-verifier-server .
 docker run -p 7047:7047 -v $(pwd)/config.yaml:/etc/tlsn-verifier/config.yaml tlsn-verifier-server
 ```
 

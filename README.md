@@ -371,6 +371,7 @@ This installs dependencies for all workspaces and sets up package links.
 Both clients need a verifier. Run it in a separate terminal:
 
 ```bash
+bash core/prepare-core.sh "$PWD/core/tlsn"   # once: the verifier builds against the pinned, patched core
 cd servers
 cargo run -p tlsn-verifier-server   # http://localhost:7047
 ```
@@ -475,6 +476,7 @@ For versioning (note the mobile-specific `0.1.AABB` scheme), credentials, and st
 ### Build the Verifier for Production
 
 ```bash
+bash core/prepare-core.sh "$PWD/core/tlsn"   # once: the verifier builds against the pinned, patched core
 cd servers
 cargo build --release -p tlsn-verifier-server   # binary in servers/target/release/
 ```

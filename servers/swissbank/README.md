@@ -56,7 +56,7 @@ All access attempts are logged and displayed in real-time on the dashboard UI.
 ## Docker
 
 ```bash
-docker build -f servers/swissbank/Dockerfile -t swissbank servers/
+docker build -f servers/swissbank/Dockerfile -t swissbank .
 docker run --rm -p 3000:3000 swissbank
 ```
 

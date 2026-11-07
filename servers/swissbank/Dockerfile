@@ -1,13 +1,22 @@
 # Build stage
-# Build context: the `servers/` Cargo workspace root.
+# Build context: the repository root. The workspace's verifier member needs the pinned, patched core in `core/`.
 FROM rust:latest AS builder
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+
+COPY core/prepare-core.sh core/VERSION ./core/
+COPY core/patches ./core/patches
+COPY core/mpz-patches ./core/mpz-patches
+RUN bash core/prepare-core.sh /app/core/tlsn
+
+WORKDIR /app/servers
+
 # Copy workspace manifests + all member manifests so cargo can resolve the workspace
-COPY Cargo.toml Cargo.lock ./
-COPY verifier/Cargo.toml ./verifier/
-COPY swissbank/Cargo.toml ./swissbank/
+COPY servers/Cargo.toml servers/Cargo.lock ./
+COPY servers/verifier/Cargo.toml ./verifier/
+COPY servers/swissbank/Cargo.toml ./swissbank/
 
 # Create dummy sources for all workspace members so deps can be fetched
 RUN mkdir -p verifier/src swissbank/src && \
@@ -18,7 +27,7 @@ RUN mkdir -p verifier/src swissbank/src && \
 RUN cargo fetch --locked
 
 # Copy real source for this crate
-COPY swissbank/src ./swissbank/src
+COPY servers/swissbank/src ./swissbank/src
 
 # Invalidate the dummy build
 RUN touch swissbank/src/main.rs
@@ -31,7 +40,7 @@ FROM debian:bookworm-slim
 
 WORKDIR /app
 
-COPY --from=builder /app/target/release/swissbank /app/swissbank
+COPY --from=builder /app/servers/target/release/swissbank /app/swissbank
 
 EXPOSE 3000
 

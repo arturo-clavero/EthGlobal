@@ -65,7 +65,7 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v7
         with:
-          context: servers
+          context: .
           file: servers/verifier/Dockerfile
           push: ${{ env.should_publish == 'true' }}
           tags: ${{ steps.meta-prover-server.outputs.tags }}

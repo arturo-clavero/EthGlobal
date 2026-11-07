@@ -1,5 +1,5 @@
 # Build stage
-# Build context: the `servers/` Cargo workspace root.
+# Build context: the repository root. The verifier builds against the pinned, patched core in `core/`.
 FROM rust:latest AS builder
 
 WORKDIR /app
@@ -11,10 +11,18 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
+# Prepare the pinned core exactly as the extension's WASM build does (checks the patch digests, clones, applies).
+COPY core/prepare-core.sh core/VERSION ./core/
+COPY core/patches ./core/patches
+COPY core/mpz-patches ./core/mpz-patches
+RUN bash core/prepare-core.sh /app/core/tlsn
+
+WORKDIR /app/servers
+
 # Copy workspace manifests + all member manifests so cargo can resolve the workspace
-COPY Cargo.toml Cargo.lock ./
-COPY verifier/Cargo.toml ./verifier/
-COPY swissbank/Cargo.toml ./swissbank/
+COPY servers/Cargo.toml servers/Cargo.lock ./
+COPY servers/verifier/Cargo.toml ./verifier/
+COPY servers/swissbank/Cargo.toml ./swissbank/
 
 # Create dummy sources for all workspace members so deps can be fetched
 RUN mkdir -p verifier/src swissbank/src && \
@@ -25,7 +33,7 @@ RUN mkdir -p verifier/src swissbank/src && \
 RUN cargo fetch --locked
 
 # Copy real source for this crate
-COPY verifier/src ./verifier/src
+COPY servers/verifier/src ./verifier/src
 
 # Invalidate the dummy build
 RUN touch verifier/src/main.rs
@@ -46,8 +54,8 @@ RUN apt-get update && apt-get install -y \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/tlsn-verifier-server /app/tlsn-verifier-server
-COPY verifier/config-prod.yaml /app/config.yaml
+COPY --from=builder /app/servers/target/release/tlsn-verifier-server /app/tlsn-verifier-server
+COPY servers/verifier/config-prod.yaml /app/config.yaml
 
 EXPOSE 7047
 
