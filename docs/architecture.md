@@ -120,10 +120,23 @@ from the response body.
 ### Verifier server role (Proxy mode)
 
 The verifier is upstream's server ([`servers/verifier`](../servers/verifier), documented in
-[`VERIFIER.md`](../VERIFIER.md)). The private proofs use **Proxy mode**: the verifier opens the TCP connection to the
+[`VERIFIER.md`](../VERIFIER.md)), built against the same pinned, patched core as the WASM prover (`core/`). The private proofs use **Proxy mode**: the verifier opens the TCP connection to the
 provider and the browser tunnels its TLS session through it. The verifier records the bytes the prover reveals (HTTP
 framing and other fixed text) and, for each private range, only a SHA-256 hash commitment. When a session ends it
 sends a receipt to the configured backend. The bundle verifiers accept only receipts whose mode is `Proxy`.
+
+The fork extends the server for private proofs:
+
+| Change | Behaviour | Settings |
+| --- | --- | --- |
+| Hash-only results | A range can be committed by hash instead of revealed. The verifier checks each commitment against its exact range, direction and algorithm, and returns only the digest. A proof that reveals nothing is valid. | none |
+| Several proofs per session | A client that registers with `multiReveal` sends one `reveal_config` per proof on one TLS session and gets one result per proof. Clients that do not ask see the upstream protocol. | none |
+| Reveal ceiling | The AES blocks a proof would authenticate are counted when announced and again at the prover's request; over the limit gives `REVEAL_TOO_LARGE`. | `TLSN_MAX_REVEAL_BLOCKS` |
+| Memory admission | Sessions reserve memory against a budget, queue briefly, and get `VERIFIER_BUSY` when it is full, so one large proof cannot starve the rest. | `TLSN_MEMORY_BUDGET_MB` (default 85% of the container limit) |
+| Session cap and timeouts | Active sessions are capped (429 over the cap); idle clients time out. | `TLSN_MAX_SESSIONS`, `TLSN_MAX_RECV_DATA`, `TLSN_MAX_SENT_DATA` |
+
+Prepare the core once before a native build: `bash core/prepare-core.sh "$PWD/core/tlsn"`. The Docker images
+do this themselves and use the repository root as build context.
 
 ### CROPS packages (`crops/`)
 
