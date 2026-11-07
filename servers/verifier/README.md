@@ -23,6 +23,14 @@ A Rust-based HTTP server with WebSocket support for TLSNotary verification opera
 
 ## Building
 
+The server builds against the same pinned, patched TLSNotary core as the extension's WASM prover (mux backpressure,
+several proofs on one session). Prepare it once at `core/tlsn` (the path `Cargo.toml` points at; it is git-ignored):
+
+```bash
+# From the repository root
+bash core/prepare-core.sh "$PWD/core/tlsn"
+```
+
 ```bash
 # From the verifier package directory
 cargo build
